@@ -827,10 +827,10 @@ public class CoverallsImporter implements Callable<Void> {
             return filesInGit;
         }
 
-        SrcTestGeneralDiffResult summarizeDiffEntry(EditList el, SrcTestGeneralDiffResult summary, DiffEntry e) {
+        void summarizeDiffEntry(EditList el, SrcTestGeneralDiffResult summary, DiffEntry e) {
 
             if (e.getNewPath() != null && (e.getNewPath().startsWith("vendor/") || e.getNewPath().startsWith("node_modules/") || e.getNewPath().startsWith("gen/") || e.getNewPath().contains("generated")))
-                return summary;
+                return;
 
             boolean entryIsTestOrSpec = (e.getNewPath().toLowerCase().contains("test") || e.getNewPath().contains(".spec"));
 
@@ -941,9 +941,10 @@ public class CoverallsImporter implements Callable<Void> {
                         break;
                 }
             }
-            return summary;
+            return;
         }
 
+        // Seems like the heart-piece if this file
         public SrcTestGeneralDiffResult diffAgainst(Build parentBuild, Repository repo, PrintWriter debugWriter) throws IOException {
             ObjectReader reader = repo.newObjectReader();
             CanonicalTreeParser thisCommParser = new CanonicalTreeParser();
@@ -986,7 +987,7 @@ public class CoverallsImporter implements Callable<Void> {
                     for (DiffEntry e : entries) {
 
                         EditList el = f.toFileHeader(e).toEditList();
-                        summary = summarizeDiffEntry(el, summary, e);
+                        summarizeDiffEntry(el, summary, e);
 
                         if (e.getChangeType() != ChangeType.MODIFY) continue;
 
@@ -1028,41 +1029,44 @@ public class CoverallsImporter implements Callable<Void> {
                 // only ones we need to open to map
                 for (String modifiedFile : modifiedFiles) {
                     SourceFile p = filesInParent.get(modifiedFile);
-                    if (p != null && filesInNew.containsKey(modifiedFile)) {
-                        // Do the diff
-                        // repo.
-                        try (TreeWalk treeWalk = TreeWalk.forPath(repo, modifiedFile, curCommitTree, prevCommitTree)) {
-                            byte[] data = reader.open(treeWalk.getObjectId(0)).getBytes();
-                            byte[] dataOld = reader.open(treeWalk.getObjectId(1)).getBytes();
-                            File newTmp = File.createTempFile("linematcher", "newFile");
-                            File oldTmp = File.createTempFile("linematcher", "oldFile");
-                            // File newTmp = new File("new");
-                            // File oldTmp = new File("old");
-                            FileOutputStream fos = new FileOutputStream(newTmp);
-                            fos.write(data);
-                            fos.close();
-                            fos = new FileOutputStream(oldTmp);
-                            fos.write(dataOld);
-                            fos.close();
+                    if (p == null || !filesInNew.containsKey(modifiedFile)) continue;
 
-                            String diff1 = systemCall(Arrays.asList("/bin/bash", "-c", "diff --unchanged-line-format=\"%dn,%c'\\12'\" --new-line-format=\"n%c'\\12'\" --old-line-format=\"\"  " + newTmp.getAbsolutePath() + " " + oldTmp.getAbsolutePath() + " | awk '/,/{n++;print $0n} /n/{n++}'"));
-                            String[] offsetStrings = diff1.split("\n");
-                            newTmp.delete();
-                            oldTmp.delete();
-                            HashMap<Integer, Integer> lineOffsets = new HashMap<>();
-                            for (String offset : offsetStrings) {
-                                String[] offsetSplit = offset.split(",");
-                                try {
-                                    if (offsetSplit.length == 2)
-                                        lineOffsets.put(Integer.parseInt(offsetSplit[0]), Integer.parseInt(offsetSplit[1]));
-                                } catch (NumberFormatException ex) {
-                                    // Random other lines show up here,
-                                    // f that
-                                }
+                    // Do the diff
+                    try (TreeWalk treeWalk = TreeWalk.forPath(repo, modifiedFile, curCommitTree, prevCommitTree)) {
+
+                        byte[] data = reader.open(treeWalk.getObjectId(0)).getBytes();
+                        File newTmp = File.createTempFile("linematcher", "newFile");
+                        FileOutputStream fos = new FileOutputStream(newTmp);
+                        fos.write(data);
+                        fos.close();
+
+                        byte[] dataOld = reader.open(treeWalk.getObjectId(1)).getBytes();
+                        File oldTmp = File.createTempFile("linematcher", "oldFile");
+                        fos = new FileOutputStream(oldTmp);
+                        fos.write(dataOld);
+                        fos.close();
+
+                        // TODO: Check what this does:
+                        String diff1 = systemCall(Arrays.asList("/bin/bash", "-c", "diff --unchanged-line-format=\"%dn,%c'\\12'\" --new-line-format=\"n%c'\\12'\" --old-line-format=\"\"  " + newTmp.getAbsolutePath() + " " + oldTmp.getAbsolutePath() + " | awk '/,/{n++;print $0n} /n/{n++}'"));
+                        String[] offsetStrings = diff1.split("\n");
+                        newTmp.delete();
+                        oldTmp.delete();
+                        HashMap<Integer, Integer> lineOffsets = new HashMap<>();
+                        System.out.println("offsetStrings from /bin/bash diff:");
+                        for (String offset : offsetStrings) {
+                            System.out.println("    " + offset);
+                            String[] offsetSplit = offset.split(",");
+                            try {
+                                if (offsetSplit.length == 2)
+                                    lineOffsets.put(Integer.parseInt(offsetSplit[0]), Integer.parseInt(offsetSplit[1]));
+                            } catch (NumberFormatException ex) {
+                                // Random other lines show up here,
+                                // f that
                             }
-                            filesInNew.get(modifiedFile).lineMapping = lineOffsets;
                         }
+                        filesInNew.get(modifiedFile).lineMapping = lineOffsets;
                     }
+
                 }
 
                 // OK, now any file that changed have a line map
