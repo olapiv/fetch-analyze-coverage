@@ -827,6 +827,123 @@ public class CoverallsImporter implements Callable<Void> {
             return filesInGit;
         }
 
+        SrcTestGeneralDiffResult summarizeDiffEntry(EditList el, SrcTestGeneralDiffResult summary, DiffEntry e) {
+
+            if (e.getNewPath() != null && (e.getNewPath().startsWith("vendor/") || e.getNewPath().startsWith("node_modules/") || e.getNewPath().startsWith("gen/") || e.getNewPath().contains("generated")))
+                return summary;
+
+            boolean entryIsTestOrSpec = (e.getNewPath().toLowerCase().contains("test") || e.getNewPath().contains(".spec"));
+
+            // Write aggregated diff data to summary
+            switch (e.getChangeType()) {
+                case MODIFY:
+
+                    if (!isCodeFile(e.getNewPath())) break;
+
+                    for (Edit ed : el) {
+                        switch (ed.getType()) {
+                            case INSERT:
+                                for (int l = ed.getBeginB() + 1; l <= ed.getEndB(); l++)
+                                    if (entryIsTestOrSpec)
+                                        summary.insLinesTest++;
+                                    else
+                                        summary.insLinesSrc++;
+                                break;
+                            case DELETE:
+                                for (int l = ed.getBeginA() + 1; l <= ed.getEndA(); l++)
+                                    if (entryIsTestOrSpec)
+                                        summary.delLinesTest++;
+                                    else
+                                        summary.delLinesSrc++;
+                                break;
+                            case REPLACE:
+                                for (int l = ed.getBeginA() + 1; l <= ed.getEndA(); l++)
+                                    if (entryIsTestOrSpec)
+                                        summary.delLinesTest++;
+                                    else
+                                        summary.delLinesSrc++;
+                                for (int l = ed.getBeginB() + 1; l <= ed.getEndB(); l++)
+                                    if (entryIsTestOrSpec)
+                                        summary.insLinesTest++;
+                                    else
+                                        summary.insLinesSrc++;
+                                break;
+                            default:
+                                break;
+                        }
+                    }
+
+                    if (entryIsTestOrSpec)
+                        summary.modFilesTest++;
+                    else
+                        summary.modFilesSrc++;
+
+                    break;
+
+                case ADD:
+
+                    if (!isCodeFile(e.getNewPath())) break;
+
+                    for (Edit ed : el) {
+                        for (int l = ed.getBeginB() + 1; l <= ed.getEndB(); l++)
+                            if (entryIsTestOrSpec)
+                                summary.insLinesTest++;
+                            else
+                                summary.insLinesSrc++;
+                    }
+
+                    if (entryIsTestOrSpec)
+                        summary.insFilesTest++;
+                    else
+                        summary.insFilesSrc++;
+
+                    break;
+
+                case DELETE:
+
+                    if (!isCodeFile(e.getOldPath())) break;
+
+                    for (Edit ed : el) {
+                        for (int l = ed.getBeginA() + 1; l <= ed.getEndA(); l++)
+                            if (entryIsTestOrSpec)
+                                summary.delLinesTest++;
+                            else
+                                summary.delLinesSrc++;
+                    }
+
+                    if (e.getOldPath().toLowerCase().contains("test") || e.getOldPath().contains(".spec"))
+                        summary.delFilesTest++;
+                    else
+                        summary.delFilesSrc++;
+
+                    break;
+
+            }
+
+            // Write aggregated diff data of all files (source + test) to summary
+            for (Edit ed : el) {
+                switch (ed.getType()) {
+                    case INSERT:
+                        for (int l = ed.getBeginB() + 1; l <= ed.getEndB(); l++)
+                            summary.insLinesAllFiles++;
+                        break;
+                    case DELETE:
+                        for (int l = ed.getBeginA() + 1; l <= ed.getEndA(); l++)
+                            summary.delLinesAllFiles++;
+                        break;
+                    case REPLACE:
+                        for (int l = ed.getBeginA() + 1; l <= ed.getEndA(); l++)
+                            summary.delLinesAllFiles++;
+                        for (int l = ed.getBeginB() + 1; l <= ed.getEndB(); l++)
+                            summary.insLinesAllFiles++;
+                        break;
+                    default:
+                        break;
+                }
+            }
+            return summary;
+        }
+
         public SrcTestGeneralDiffResult diffAgainst(Build parentBuild, Repository repo, PrintWriter debugWriter) throws IOException {
             ObjectReader reader = repo.newObjectReader();
             CanonicalTreeParser thisCommParser = new CanonicalTreeParser();
@@ -856,196 +973,56 @@ public class CoverallsImporter implements Callable<Void> {
                 List<DiffEntry> entries;
                 HashSet<String> modifiedFiles = new HashSet<>();
 
-                try (DiffFormatter f = new DiffFormatter(System.out)) {
-                    f.setRepository(repo);
-                    entries = f.scan(parentParser, thisCommParser);
-                    for (DiffEntry e : entries) {
-                        if (e.getNewPath() != null && (e.getNewPath().startsWith("vendor/") || e.getNewPath().startsWith("node_modules/") || e.getNewPath().startsWith("gen/") || e.getNewPath().contains("generated")))
-                            continue;
-                        EditList el = f.toFileHeader(e).toEditList();
-                        switch (e.getChangeType()) {
-                            case MODIFY:
-                                if (isCodeFile(e.getNewPath())) {
-                                    for (Edit ed : el) {
-                                        switch (ed.getType()) {
-                                            case INSERT:
-                                                for (int l = ed.getBeginB() + 1; l <= ed.getEndB(); l++)
-                                                    if (e.getNewPath().toLowerCase().contains("test") || e.getNewPath().contains(".spec"))
-                                                        summary.insLinesTest++;
-                                                    else
-                                                        summary.insLinesSrc++;
-                                                break;
-                                            case DELETE:
-                                                for (int l = ed.getBeginA() + 1; l <= ed.getEndA(); l++)
-                                                    if (e.getNewPath().toLowerCase().contains("test") || e.getNewPath().contains(".spec"))
-                                                        summary.delLinesTest++;
-                                                    else
-                                                        summary.delLinesSrc++;
-                                                break;
-                                            case REPLACE:
-                                                for (int l = ed.getBeginA() + 1; l <= ed.getEndA(); l++)
-                                                    if (e.getNewPath().toLowerCase().contains("test") || e.getNewPath().contains(".spec"))
-                                                        summary.delLinesTest++;
-                                                    else
-                                                        summary.delLinesSrc++;
-                                                for (int l = ed.getBeginB() + 1; l <= ed.getEndB(); l++)
-                                                    if (e.getNewPath().toLowerCase().contains("test") || e.getNewPath().contains(".spec"))
-                                                        summary.insLinesTest++;
-                                                    else
-                                                        summary.insLinesSrc++;
-                                                break;
-                                            default:
-                                                break;
-                                        }
-                                    }
-                                    if (e.getNewPath().toLowerCase().contains("test") || e.getNewPath().contains(".spec"))
-                                        summary.modFilesTest++;
-                                    else
-                                        summary.modFilesSrc++;
-                                }
-                                break;
-                            case ADD:
-                                if (isCodeFile(e.getNewPath())) {
-                                    for (Edit ed : el) {
-                                        for (int l = ed.getBeginB() + 1; l <= ed.getEndB(); l++)
-                                            if (e.getNewPath().toLowerCase().contains("test") || e.getNewPath().contains(".spec"))
-                                                summary.insLinesTest++;
-                                            else
-                                                summary.insLinesSrc++;
-                                    }
-                                    if (e.getNewPath().toLowerCase().contains("test") || e.getNewPath().contains(".spec"))
-                                        summary.insFilesTest++;
-                                    else
-                                        summary.insFilesSrc++;
-                                }
-                                break;
-                            case DELETE:
-                                if (isCodeFile(e.getOldPath())) {
-                                    for (Edit ed : el) {
-                                        for (int l = ed.getBeginA() + 1; l <= ed.getEndA(); l++)
-                                            if (e.getNewPath().toLowerCase().contains("test") || e.getNewPath().contains(".spec"))
-                                                summary.delLinesTest++;
-                                            else
-                                                summary.delLinesSrc++;
-                                    }
-                                    if (e.getOldPath().toLowerCase().contains("test") || e.getOldPath().contains(".spec"))
-                                        summary.delFilesTest++;
-                                    else
-                                        summary.delFilesSrc++;
-                                }
-                                break;
-                        }
-
-                        switch (e.getChangeType()) {
-                            case MODIFY:
-                                for (Edit ed : el) {
-                                    switch (ed.getType()) {
-                                        case INSERT:
-                                            for (int l = ed.getBeginB() + 1; l <= ed.getEndB(); l++)
-                                                summary.insLinesAllFiles++;
-                                            break;
-                                        case DELETE:
-                                            for (int l = ed.getBeginA() + 1; l <= ed.getEndA(); l++)
-                                                summary.delLinesAllFiles++;
-                                            break;
-                                        case REPLACE:
-                                            for (int l = ed.getBeginA() + 1; l <= ed.getEndA(); l++)
-                                                summary.delLinesAllFiles++;
-                                            for (int l = ed.getBeginB() + 1; l <= ed.getEndB(); l++)
-                                                summary.insLinesAllFiles++;
-                                            break;
-                                        default:
-                                            break;
-                                    }
-                                }
-                                break;
-                            case ADD:
-                                for (Edit ed : el) {
-                                    switch (ed.getType()) {
-                                        case INSERT:
-                                            for (int l = ed.getBeginB() + 1; l <= ed.getEndB(); l++)
-                                                summary.insLinesAllFiles++;
-                                            break;
-                                        case DELETE:
-                                            for (int l = ed.getBeginA() + 1; l <= ed.getEndA(); l++)
-                                                summary.delLinesAllFiles++;
-                                            break;
-                                        case REPLACE:
-                                            for (int l = ed.getBeginA() + 1; l <= ed.getEndA(); l++)
-                                                summary.delLinesAllFiles++;
-                                            for (int l = ed.getBeginB() + 1; l <= ed.getEndB(); l++)
-                                                summary.insLinesAllFiles++;
-                                            break;
-                                        default:
-                                            break;
-                                    }
-                                }
-                                break;
-                            case DELETE:
-                                for (Edit ed : el) {
-                                    switch (ed.getType()) {
-                                        case INSERT:
-                                            for (int l = ed.getBeginB() + 1; l <= ed.getEndB(); l++)
-                                                summary.insLinesAllFiles++;
-                                            break;
-                                        case DELETE:
-                                            for (int l = ed.getBeginA() + 1; l <= ed.getEndA(); l++)
-                                                summary.delLinesAllFiles++;
-                                            break;
-                                        case REPLACE:
-                                            for (int l = ed.getBeginA() + 1; l <= ed.getEndA(); l++)
-                                                summary.delLinesAllFiles++;
-                                            for (int l = ed.getBeginB() + 1; l <= ed.getEndB(); l++)
-                                                summary.insLinesAllFiles++;
-                                            break;
-                                        default:
-                                            break;
-                                    }
-                                    break;
-                                }
-                        }
-                        if (e.getChangeType() == ChangeType.MODIFY) {
-                            modifiedFiles.add(e.getNewPath());
-                            /*
-                             * Find which lines are new, modified, deleted
-                             */
-                            SourceFile p = filesInNew.get(e.getNewPath());
-                            if (p == null) {
-                                // Maybe because the file is never called
-                                // System.out.println("Skipping missing file: "
-                                // + e.getNewPath());
-                                continue;
-                            }
-                            for (Edit ed : el) {
-                                switch (ed.getType()) {
-                                    case INSERT:
-                                        for (int l = ed.getBeginB() + 1; l <= ed.getEndB(); l++)
-                                            p.newLines.add(l);
-                                        break;
-                                    case DELETE:
-                                        for (int l = ed.getBeginA() + 1; l <= ed.getEndA(); l++)
-                                            p.deletedLines.add(l);
-                                        break;
-                                    case REPLACE:
-                                        for (int l = ed.getBeginA() + 1; l <= ed.getEndA(); l++)
-                                            p.deletedLines.add(l);
-                                        for (int l = ed.getBeginB() + 1; l <= ed.getEndB(); l++)
-                                            p.newLines.add(l);
-                                        break;
-                                    default:
-                                        break;
-                                }
-                            }
-                        }
-                    }
-                }
-
                 HashMap<String, SourceFile> filesInNew = new HashMap<>();
                 for (SourceFile sf : sourceFileList.parsedFiles)
                     filesInNew.put(sf.name, sf);
                 HashMap<String, SourceFile> filesInParent = new HashMap<>();
                 for (SourceFile sf : parentBuild.sourceFileList.parsedFiles)
                     filesInParent.put(sf.name, sf);
+
+                try (DiffFormatter f = new DiffFormatter(System.out)) {
+                    f.setRepository(repo);
+                    entries = f.scan(parentParser, thisCommParser);
+                    for (DiffEntry e : entries) {
+
+                        EditList el = f.toFileHeader(e).toEditList();
+                        summary = summarizeDiffEntry(el, summary, e);
+
+                        if (e.getChangeType() != ChangeType.MODIFY) continue;
+
+                        // Find which lines are new, modified, deleted
+
+                        modifiedFiles.add(e.getNewPath());
+
+                        // sourceFile is later changed by reference inside filesInNew
+                        SourceFile sourceFile = filesInNew.get(e.getNewPath());
+                        if (sourceFile == null) {
+                            // Maybe because the file is never called
+                            continue;
+                        }
+                        for (Edit ed : el) {
+                            switch (ed.getType()) {
+                                case INSERT:
+                                    for (int l = ed.getBeginB() + 1; l <= ed.getEndB(); l++)
+                                        sourceFile.newLines.add(l);
+                                    break;
+                                case DELETE:
+                                    for (int l = ed.getBeginA() + 1; l <= ed.getEndA(); l++)
+                                        sourceFile.deletedLines.add(l);
+                                    break;
+                                case REPLACE:
+                                    for (int l = ed.getBeginB() + 1; l <= ed.getEndB(); l++)
+                                        sourceFile.newLines.add(l);
+                                    for (int l = ed.getBeginA() + 1; l <= ed.getEndA(); l++)
+                                        sourceFile.deletedLines.add(l);
+                                    break;
+                                default:
+                                    break;
+                            }
+                        }
+
+                    }
+                }
 
                 // Find all of the files that changed - those are the
                 // only ones we need to open to map

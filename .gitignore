@@ -125,3 +125,6 @@ dependency-reduced-pom.xml
 .project
 .settings
 .idea
+
+### Project ###
+coveralls_importer/temp
