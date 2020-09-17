@@ -1,17 +1,6 @@
 package edu.gmu.swe.coverdiff;
 
-import java.io.BufferedReader;
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
-import java.io.FileWriter;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.InputStreamReader;
-import java.io.ObjectInputStream;
-import java.io.ObjectOutputStream;
-import java.io.PrintWriter;
-import java.io.Serializable;
+import java.io.*;
 import java.nio.file.Files;
 import java.util.*;
 import java.util.Map.Entry;
@@ -51,77 +40,54 @@ import picocli.CommandLine.Option;
 
 public class CoverallsImporter implements Callable<Void> {
 
+    static boolean fixFencePostInt = false;
+    static boolean exception = false;
+    private static boolean VERBOSE = false;
+    final RateLimiter rateLimiter = RateLimiter.create(1.4);
+    private final Moshi moshi = new Moshi.Builder().build();
+    private final JsonAdapter<BuildList> buildListJsonAdapter = moshi.adapter(BuildList.class);
+    private final JsonAdapter<SourceFileList> sourceFileListJsonAdapter = moshi.adapter(SourceFileList.class);
+    private final JsonAdapter<List<SourceFile>> sourceFileJsonAdapter = moshi.adapter(Types.newParameterizedType(List.class, SourceFile.class));
+    private final JsonAdapter<List<Integer>> coverageListJsonAdapter = moshi.adapter(Types.newParameterizedType(List.class, Integer.class));
     @Option(names = {"-d"}, description = "Directory to store repos in")
     File repoBaseDirectory = new File("repos");
-
     @Option(names = {"-c"}, description = "Directory to cache JSON in")
     File cacheDirectory = new File("cache");
-
     @Option(names = {"-sc"}, description = "Directory to cache parsed JSON in")
     File serialCachedDirectory = new File("serialized-cache");
-
     @Option(names = {"-offline"}, description = "Offline mode (uses cache only)")
     boolean offline = false;
-
     @Option(names = {"-fixFence"}, description = "Fix Coveralls data to be 1-indexed instead of 0 from serialized file (do not use normally unless importing old serialized files that don't have this fixed... that includes the original ASE data files")
     boolean fixFencepost = false;
-    static boolean fixFencePostInt = false;
-
     @Option(names = {"-shaLists"}, description = "Download only the SHAs listed in shaLists/slug for each project slug; -page becomes a limit on # of builds not pages")
     File shaListsDir;
-
     URLCache cache;
-
     @Option(names = {"-p"}, description = "URL of git repository to analyze")
     String singleProjectURL;
-
     @Option(names = {"-i"}, description = "Path to a .csv where the first column is a list of GH project URLs")
     String inputFile;
-
     @Option(names = {"-o"}, description = "Output file")
     String outputFile = "coverage.csv";
-
     @Option(names = {"-page"}, description = "Number of pages of coveralls builds to fetch, -1 to fetch all")
     int pages = 1;
-
     @Option(names = {"-debug"}, description = "Debug mode (prints out file-level coverage too)")
     boolean debug = true;
-
     @Option(names = {"--ignore-serialized"}, description = "Ignore any pre-processed, serialized data and re-construct from JSON (using JSON cache if available)")
     boolean skipSerialized = false;
-
-    @Option(names = {"-h", "--help"}, usageHelp = true, description = "Show this help message and exit.")
-    private boolean helpRequested;
-
     @Option(names = {"-noCoverage"}, description = "Skip downloading coverage, just get build info")
     boolean skipCoverage = false;
-
+    AtomicInteger outstandingRequests = new AtomicInteger(0);
+    ExecutorService executorService = Executors.newFixedThreadPool(16);
+    HashSet<String> shasToFetch;
+    @Option(names = {"-h", "--help"}, usageHelp = true, description = "Show this help message and exit.")
+    private boolean helpRequested;
     private boolean hasHeader = false;
     @Option(names = {"-jacoco"}, description = "Enable jacoco mode (must be specified first, unlocks other options)")
     private boolean jacoco = false;
-
-    private final Moshi moshi = new Moshi.Builder().build();
-    private final JsonAdapter<BuildList> buildListJsonAdapter = moshi.adapter(BuildList.class);
-
-    private final JsonAdapter<SourceFileList> sourceFileListJsonAdapter = moshi.adapter(SourceFileList.class);
-
-    private final JsonAdapter<List<SourceFile>> sourceFileJsonAdapter = moshi.adapter(Types.newParameterizedType(List.class, SourceFile.class));
-
-    private final JsonAdapter<List<Integer>> coverageListJsonAdapter = moshi.adapter(Types.newParameterizedType(List.class, Integer.class));
-
-    public static void main(String[] args) {
-        if (args.length > 0 && args[0].equals("-jacoco"))
-            CommandLine.call(new LegacyJaCoCoMySQLImporter(), System.err, args);
-        else
-            CommandLine.call(new CoverallsImporter(), System.err, args);
-
-    }
-
     private HttpRequestFactory requestFactory;
     private AtomicInteger requestsMade = new AtomicInteger(0);
     private AtomicInteger requestsServedFromCache = new AtomicInteger(0);
     private PrintWriter outputWriter;
-    final RateLimiter rateLimiter = RateLimiter.create(1.4);
 
     public CoverallsImporter() {
         /*
@@ -130,126 +96,12 @@ public class CoverallsImporter implements Callable<Void> {
         requestFactory = new NetHttpTransport().createRequestFactory();
     }
 
-    AtomicInteger outstandingRequests = new AtomicInteger(0);
+    public static void main(String[] args) {
+        if (args.length > 0 && args[0].equals("-jacoco"))
+            CommandLine.call(new LegacyJaCoCoMySQLImporter(), System.err, args);
+        else
+            CommandLine.call(new CoverallsImporter(), System.err, args);
 
-    static boolean exception = false;
-
-    ExecutorService executorService = Executors.newFixedThreadPool(16);
-
-    CompletableFuture<String> fetch(String url) {
-        return CompletableFuture.supplyAsync(() -> {
-            boolean cacheable = url.startsWith("https://coveralls.io/builds/");
-            if (cacheable) {
-
-                try {
-                    String ret = cache.get(url);
-                    if (ret != null) {
-                        return ret;
-                    }
-                } catch (IOException e) {
-                    e.printStackTrace();
-                }
-
-            }
-            rateLimiter.acquire();
-
-            int n = requestsMade.incrementAndGet();
-            if (n % 100 == 0) {
-                System.out.println("Total requests made: " + n);
-            }
-
-            try {
-                HttpRequest request = requestFactory.buildGetRequest(new GenericUrl(url));
-                String rawResponse = request.execute().parseAsString();
-                if (cacheable)
-                    cache.save(url, rawResponse);
-                return rawResponse;
-            } catch (IOException e) {
-                throw new IllegalStateException("While fetching " + url, e);
-            }
-        }, executorService);
-    }
-
-    void fetchSourceFileInfo(final Build b, int page) throws IOException {
-        if (exception)
-            throw new IOException();
-        outstandingRequests.incrementAndGet();
-        CompletableFuture<String> rq = fetch("https://coveralls.io/builds/" + b.commit_sha + "/source_files.json");
-        rq.handleAsync((String ret, Throwable ex) -> {
-            try {
-                if (ret == null) {
-                    System.err.println("No result!");
-                } else if (ex != null) {
-                    ex.printStackTrace();
-                } else {
-                    SourceFileList sfl = sourceFileListJsonAdapter.fromJson(ret);
-                    sfl.parsedFiles = sourceFileJsonAdapter.fromJson(sfl.source_files);
-                    sfl.source_files = null;
-                    b.appendSFL(sfl);
-                    if (sfl.current_page == 1 && sfl.total_pages > 1) {
-                        for (int i = 2; i < sfl.total_pages; i++)
-                            fetchSourceFileInfo(b, i);
-                    }
-
-                    // Now fetch data on each file
-                    for (SourceFile sf : sfl.parsedFiles) {
-                        getCoverageArray(b.commit_sha, sf);
-                    }
-                }
-            } catch (Throwable e) {
-                e.printStackTrace();
-            } finally {
-                synchronized (outstandingRequests) {
-                    outstandingRequests.decrementAndGet();
-                    outstandingRequests.notify();
-                }
-            }
-            return null;
-
-        });
-    }
-
-    boolean shouldFetchBuild(Build b) {
-        if (b.commit_sha.equals("HEAD"))
-            return true;
-        if (shasToFetch == null)
-            return true;
-        synchronized (shasToFetch) {
-            return shasToFetch.remove(b.commit_sha);
-        }
-    }
-
-    BuildList fetchBuilds(String coverallsPath, int page) throws IOException {
-        if (exception)
-            throw new IOException();
-        //Dont bother with async here
-        CompletableFuture<String> res = fetch("https://coveralls.io/" + coverallsPath + ".json?page=" + page);
-        try {
-            System.out.println("START: " + coverallsPath + "#" + page);
-            String bl = res.get();
-            BuildList buildList = buildListJsonAdapter.fromJson(bl);
-            if (!skipCoverage) {
-                List<Build> existing = buildList.builds;
-                buildList.builds = new LinkedList<>();
-                for (Build b : existing) {
-                    if (shouldFetchBuild(b)) {
-                        fetchSourceFileInfo(b, 1);
-                        buildList.builds.add(b);
-                    }
-                }
-            } else {
-                for (Build b : buildList.builds) {
-                    System.out.println(b.commit_sha);
-                    outputWriter.print(b.commit_sha + "," + b.branch + "\n");
-                    outputWriter.flush();
-                }
-            }
-            System.out.println("END: " + coverallsPath + "#" + page + ", " + buildList.builds.size());
-            return buildList;
-
-        } catch (Throwable e) {
-            throw new IOException("While fetching build list for " + coverallsPath + " page " + page, e);
-        }
     }
 
     static String getLeftParentSHA(Repository repo, String commit) throws IOException {
@@ -271,37 +123,6 @@ public class CoverallsImporter implements Callable<Void> {
 //			System.out.println("Missing Parent for:"+commit);
             return null;
         }
-    }
-
-    void getCoverageArray(String commit, final SourceFile sf) throws IOException {
-        if (exception)
-            throw new IOException();
-
-        // https://coveralls.io/builds/2ea77ec5eeea2351de50b268994ba69f876b815c/source.json?filename=lib%2Fcoveralls%2Fsimplecov.rb
-        outstandingRequests.incrementAndGet();
-        CompletableFuture<String> rq = fetch("https://coveralls.io/builds/" + commit + "/source.json?filename=" + sf.name);
-        rq.handleAsync((String ret, Throwable ex) -> {
-            try {
-                if (ret == null) {
-                    System.err.println("No result!");
-                } else if (ex != null) {
-                    ex.printStackTrace();
-                } else {
-                    sf.coverage = new ArrayList<>();
-                    sf.coverage.add(-1);
-                    sf.coverage.addAll(coverageListJsonAdapter.fromJson(ret));
-                }
-            } catch (IOException e) {
-                e.printStackTrace();
-            } finally {
-                synchronized (outstandingRequests) {
-                    outstandingRequests.decrementAndGet();
-                    outstandingRequests.notify();
-                }
-            }
-            return null;
-
-        });
     }
 
     private static String output(InputStream inputStream) throws IOException {
@@ -360,147 +181,323 @@ public class CoverallsImporter implements Callable<Void> {
         // }
     }
 
-    private static boolean VERBOSE = false;
+    CompletableFuture<String> fetch(String url) {
+        return CompletableFuture.supplyAsync(() -> {
+            boolean cacheable = url.startsWith("https://coveralls.io/builds/");
+            if (cacheable) {
 
+                try {
+                    String ret = cache.get(url);
+                    if (ret != null) {
+                        return ret;
+                    }
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
+
+            }
+            rateLimiter.acquire();
+
+            int n = requestsMade.incrementAndGet();
+            if (n % 100 == 0) {
+                System.out.println("[Benchmark] Total requests made: " + n);
+            }
+
+            try {
+                HttpRequest request = requestFactory.buildGetRequest(new GenericUrl(url));
+                String rawResponse = request.execute().parseAsString();
+                if (cacheable) {
+                    System.out.println("Caching response of: " + url);
+                    cache.save(url, rawResponse);
+                }
+                return rawResponse;
+            } catch (IOException e) {
+                throw new IllegalStateException("While fetching " + url, e);
+            }
+
+        }, executorService);
+    }
+
+    void fetchSourceFileInfo(final Build b, int page) throws IOException {
+        if (exception)
+            throw new IOException();
+        outstandingRequests.incrementAndGet();
+        String urlToFetch = "https://coveralls.io/builds/" + b.commit_sha + "/source_files.json";
+        System.out.println("Fetching url: " + urlToFetch);
+        CompletableFuture<String> rq = fetch(urlToFetch);
+        rq.handleAsync((String ret, Throwable ex) -> {
+            try {
+                if (ret == null) {
+                    System.err.println("No result!");
+                } else if (ex != null) {
+                    ex.printStackTrace();
+                } else {
+                    SourceFileList sfl = sourceFileListJsonAdapter.fromJson(ret);
+                    sfl.parsedFiles = sourceFileJsonAdapter.fromJson(sfl.source_files);
+                    sfl.source_files = null;
+                    b.appendSFL(sfl);
+                    if (sfl.current_page == 1 && sfl.total_pages > 1) {
+                        for (int i = 2; i < sfl.total_pages; i++)
+                            fetchSourceFileInfo(b, i);
+                    }
+
+                    // Now fetch data on each file
+                    for (SourceFile sf : sfl.parsedFiles) {
+                        getCoverageArray(b.commit_sha, sf);
+                    }
+                }
+            } catch (Throwable e) {
+                e.printStackTrace();
+            } finally {
+                synchronized (outstandingRequests) {
+                    outstandingRequests.decrementAndGet();
+                    outstandingRequests.notify();
+                }
+            }
+            return null;
+
+        });
+    }
+
+    boolean shouldFetchBuild(Build b) {
+        if (b.commit_sha.equals("HEAD"))
+            return true;
+        if (shasToFetch == null)
+            return true;
+        synchronized (shasToFetch) {
+            return shasToFetch.remove(b.commit_sha);
+        }
+    }
+
+    BuildList fetchBuilds(String coverallsPath, int page) throws IOException {
+        if (exception)
+            throw new IOException();
+        // Don't bother with async here
+        String urlToFetch = "https://coveralls.io/" + coverallsPath + ".json?page=" + page;
+        CompletableFuture<String> res = fetch(urlToFetch);
+        System.out.println("Fetch start: " + urlToFetch);
+        try {
+            String bl = res.get();
+            BuildList buildList = buildListJsonAdapter.fromJson(bl);
+            if (!skipCoverage) {
+                List<Build> existing = buildList.builds;
+                buildList.builds = new LinkedList<>();
+                for (Build b : existing) {
+                    if (shouldFetchBuild(b)) {
+                        fetchSourceFileInfo(b, 1);
+                        buildList.builds.add(b);
+                    }
+                }
+            } else {
+                for (Build b : buildList.builds) {
+                    System.out.println(b.commit_sha);
+                    outputWriter.print(b.commit_sha + "," + b.branch + "\n");
+                    outputWriter.flush();
+                }
+            }
+            System.out.println("Fetch end: " + urlToFetch + "; Number of builds fetched: " + buildList.builds.size());
+            return buildList;
+
+        } catch (Throwable e) {
+            throw new IOException("While fetching builds for " + urlToFetch, e);
+        }
+    }
+
+    /**
+     * Fetches coverage array from coveralls.io and adds it to SourceFile.coverage (ArrayList)
+     * Sample url: https://coveralls.io/builds/2ea77ec5eeea2351de50b268994ba69f876b815c/source.json?filename=lib%2Fcoveralls%2Fsimplecov.rb
+     * @param commit
+     * @param sf
+     * @throws IOException
+     */
+    void getCoverageArray(String commit, final SourceFile sf) throws IOException {
+        if (exception) throw new IOException();
+        outstandingRequests.incrementAndGet();
+        String urlToFetch = "https://coveralls.io/builds/" + commit + "/source.json?filename=" + sf.name;
+        System.out.println("Fetching url: " + urlToFetch);
+        CompletableFuture<String> rq = fetch(urlToFetch);
+        rq.handleAsync((String ret, Throwable ex) -> {
+            try {
+                if (ret == null) {
+                    System.err.println("No result!");
+                } else if (ex != null) {
+                    ex.printStackTrace();
+                } else {
+                    sf.coverage = new ArrayList<>();
+                    sf.coverage.add(-1);
+                    sf.coverage.addAll(coverageListJsonAdapter.fromJson(ret));
+                }
+            } catch (IOException e) {
+                e.printStackTrace();
+            } finally {
+                synchronized (outstandingRequests) {
+                    outstandingRequests.decrementAndGet();
+                    outstandingRequests.notify();
+                }
+            }
+            return null;
+
+        });
+    }
 
     boolean shouldKeepFetching(BuildList bl) {
         if (shaListsDir == null) {
-            //Decide to stop based on # of pages fetched
+            // Decide to stop based on # of pages fetched
             return bl.page < bl.pages && (pages < 0 || bl.page <= pages);
         } else {
             bl.builds = bl.nonEmptyBuilds();
-            //Decide to stop based on # of builds
+            // Decide to stop based on # of builds
             return bl.page < bl.pages && bl.builds.size() < pages;
         }
     }
 
-    HashSet<String> shasToFetch;
+    /**
+     * If shaListsDir is specified, we will only download the SHAs listed
+     * in shaLists/slug for each project slug; (see options for callable)
+     */
+    HashSet<String> getShasToFetch(String projectSlug){
+        if (shaListsDir == null) return null;
+        File shaFile = new File(shaListsDir, projectSlug);
 
-    BuildList processBuild(String projectURL) throws Exception {
-        int noParent = 0;
-        int parent = 0;
-        exception = false;
-        String coverallsPath = projectURL.replace("https://github.com/", "");
-        String projectSlug = coverallsPath.replace("/", "-");
-        coverallsPath = "/github/" + coverallsPath;
-        HashMap<String, Build> builds = new HashMap<>();
-
-        shasToFetch = null;
-        if (shaListsDir != null) {
-            File shaFile = new File(shaListsDir, projectSlug);
-            if (shaFile.exists()) {
-                shasToFetch = new HashSet<>();
-                try (Scanner s = new Scanner(shaFile)) {
-                    while (s.hasNextLine())
-                        shasToFetch.add(s.nextLine());
-                }
-            }
+        shasToFetch = new HashSet<>();
+        try (Scanner s = new Scanner(shaFile)) {
+            while (s.hasNextLine())
+                shasToFetch.add(s.nextLine());
+        } catch (FileNotFoundException e) {
+            return null;
         }
+        return shasToFetch;
+    }
+
+    BuildList processBuilds(String projectURL) throws Exception {
+        System.out.println("Fetching and processing builds from: " + projectURL);
+        exception = false;
+
+        // Calculating coveralls path of Github repo
+        String githubPath = projectURL.replace("https://github.com/", "");
+        String projectSlug = githubPath.replace("/", "-");
+        String coverallsPath = "/github/" + githubPath;
+
+        shasToFetch = getShasToFetch(projectSlug);
+
         File cachedParsed = new File(serialCachedDirectory, projectSlug);
         BuildList bl;
         if (!cachedParsed.exists() || skipSerialized) {
-            if (offline)
-                return null;
+            if (offline) return null;
+
+            System.out.println("Fetching builds from coveralls.io");
             bl = fetchBuilds(coverallsPath, 1);
             while (shouldKeepFetching(bl)) {
                 BuildList _bl = fetchBuilds(coverallsPath, bl.page + 1);
                 bl.page = _bl.page;
                 bl.builds.addAll(_bl.builds);
             }
-            System.out.println("Made all async requests. waiting for requests to finish");
+            System.out.println("Made all async requests. Waiting for requests to finish.");
             while (outstandingRequests.get() > 0)
                 synchronized (outstandingRequests) {
                     outstandingRequests.wait();
                 }
+            System.out.println("Done waiting. Builds fetched: " + bl.builds.size());
 
-            System.out.println("OK done waiting");
+            System.out.println("Caching builds to file.");
             ObjectOutputStream oos = new ObjectOutputStream(new FileOutputStream(cachedParsed));
             oos.writeObject(bl);
             oos.close();
+
         } else {
-            System.out.println("Not fetching anything - using cached parsed file " + cachedParsed);
+
+            System.out.println("Not fetching from coveralls.io. Parsing cached builds from file: " + cachedParsed);
             ObjectInputStream ois = new ObjectInputStream(new FileInputStream(cachedParsed));
             bl = (BuildList) ois.readObject();
             ois.close();
+
         }
-        for (Build b : bl.builds) {
-            builds.put(b.commit_sha, b);
-        }
-        if (skipCoverage) {
-            return bl;
-        }
+
+        if (skipCoverage) return bl;
+
+        HashMap<String, Build> builds = new HashMap<>();
+        for (Build b : bl.builds) builds.put(b.commit_sha, b);
+
         PrintWriter debugWriter = null;
-        outputWriter = new PrintWriter(new FileWriter(outputFile, true));
         if (debug) {
             debugWriter = new PrintWriter(new FileWriter("coverage_class.csv"));
             debugWriter.print(DiffResult.toCSVDebugHeader());
         }
+
+        outputWriter = new PrintWriter(new FileWriter(outputFile, true));
         if (!hasHeader) {
             outputWriter.print(SrcTestGeneralDiffResult.toCSVHeader());
             hasHeader = true;
         }
+
         File repoDir = new File(repoBaseDirectory, projectSlug);
         if (!repoDir.exists()) {
             Git.cloneRepository().setURI(projectURL).setBare(true).setDirectory(repoDir).call();
         }
+
         FileRepositoryBuilder frb = new FileRepositoryBuilder();
         frb.setGitDir(repoDir);
         frb.setBare();
         Repository repo = frb.build();
+        int parentsFound = 0;
+        int parentNotFound = 0;
         for (Build b : bl.builds) {
-//			System.out.println("BUILD: "+b.commit_sha);
-//			String parent = getLeftParentSHA(repo, b.commit_sha);
-            Build ancestorBuild = findAncestor(b.commit_sha, builds, repo);
-//			if (ancestorBuild != null) {
-//				Build ancestorBuild = findAncestor(b.commit_sha,builds,parent,repo);//builds.get(parent);
-//				System.out.println("missing Build parent:"+ancestorBuild+" from project:"+projectURL);
-            if (ancestorBuild != null) {
-//					System.out.println("FOUND ANCESTOR For:"+b.repo_name+" " + b.commit_sha);
-                parent++;
-                try {
-                    SrcTestGeneralDiffResult sum = b.diffAgainst(ancestorBuild, repo, debugWriter);
-                    outputWriter.print(b.repo_name + "," + b.commit_sha + "," + ancestorBuild.commit_sha + "," + b.branch + "," + b.commitTime + "," + sum.toCSV());
-                } catch (Throwable t) {
-                    t.printStackTrace();
-                }
-            } else {
 
-                noParent++;
-                System.out.println("CANT FIND ANCESTOR For:" + b.repo_name + " " + b.commit_sha);
+            Build ancestorBuild = findAncestor(b.commit_sha, builds, repo);
+
+            if (ancestorBuild == null) {
+                parentNotFound++;
+                System.out.println("Can't find ancestor build for commit sha:" + b.commit_sha + " in repo: "  + b.repo_name );
+                continue;
             }
-//			}
+
+            parentsFound++;
+            try {
+                SrcTestGeneralDiffResult sum = b.diffAgainst(ancestorBuild, repo, debugWriter);
+
+                // Printing in the specified csv output format:
+                outputWriter.print(b.repo_name + "," + b.commit_sha + "," + ancestorBuild.commit_sha + "," + b.branch + "," + b.commitTime + "," + sum.toCSV());
+            } catch (Throwable t) {
+                t.printStackTrace();
+            }
+
         }
-        if (debug)
-            debugWriter.close();
+
+        System.out.println("Parents found: " + parentsFound + "; Parents not found: " + parentNotFound + "; Total parents: " + bl.builds.size());
+
+        if (debug) debugWriter.close();
         outputWriter.close();
-        System.out.println("Parents: " + parent + " NO Parent:" + noParent + " of Total:" + (parent + noParent));
+
         return bl;
     }
 
+    /*
+    * Find the nearest ancestor of a given commit.
+    * */
     private Build findAncestor(String childCommit, HashMap<String, Build> builds, Repository repo) throws IOException {
         String parent = getLeftParentSHA(repo, childCommit);
         if (parent == null) {
-            System.out.println("UNABLE TO FIND PARENT FOR " + childCommit);
+            // Can't find any ancestor for commit. Giving up search.
             return null;
         }
         Build parentBuild = builds.get(parent);
         if (parentBuild == null) {
-            //System.out.println("MISSING BUILD PARENT:");
+            // Missing this build's parent. Try to find it's grandparent instead.
             return findAncestor(parent, builds, repo);
         } else {
-            //System.out.println("FOUND BUILD PARENT");
+            // Found build parent
             return parentBuild;
         }
 
     }
 
-
+    // Entry function of CoverallsImporter (Callable)
     @Override
     public Void call() throws Exception {
         fixFencePostInt = fixFencepost;
         File file = new File(outputFile);
         try {
-            boolean result = Files.deleteIfExists(file.toPath());
+            Files.deleteIfExists(file.toPath());
         } catch (IOException e) {
             e.printStackTrace();
         }
@@ -511,14 +508,13 @@ public class CoverallsImporter implements Callable<Void> {
             outputWriter.println("SHA,branch");
         }
         this.cache = new URLCache(cacheDirectory.toPath());
-        if (singleProjectURL == null && inputFile != null) {
+        if (inputFile != null) {
             try (Scanner scanner = new Scanner(new File(inputFile))) {
                 while (scanner.hasNextLine()) {
                     String line = scanner.nextLine();
                     String url = line.split(",")[0];
                     try {
-                        System.out.println("Downloading " + url);
-                        BuildList ret = processBuild(url);
+                        BuildList ret = processBuilds(url);
                         if (ret != null)
                             System.out.println(ret.summarize());
                     } catch (Throwable ex) {
@@ -532,13 +528,13 @@ public class CoverallsImporter implements Callable<Void> {
                     outputWriter.close();
             }
             return null;
-        } else if (inputFile == null && singleProjectURL != null) {
-            BuildList ret = processBuild(singleProjectURL);
+        } else if (singleProjectURL != null) {
+            BuildList ret = processBuilds(singleProjectURL);
             if (ret != null)
                 System.out.println(ret.summarize());
             return null;
         }
-        throw new IllegalArgumentException("Exactly one of projectURL or inputFile must be specified");
+        throw new IllegalArgumentException("Specify either projectURL or inputFile");
     }
 
     static class BuildList implements Serializable {
@@ -595,6 +591,11 @@ public class CoverallsImporter implements Callable<Void> {
         String branch;
         transient String parent_sha;
         transient int commitTime;
+        private transient boolean namesFixed;
+
+        static final boolean isCodeFile(String s) {
+            return s.endsWith(".java") || s.endsWith(".go") || s.endsWith(".scala") || s.endsWith(".js") || s.endsWith(".cs") || s.endsWith(".ex") || s.endsWith(".exs") || s.endsWith(".py") || s.endsWith(".ts");
+        }
 
         @Override
         public String toString() {
@@ -607,10 +608,6 @@ public class CoverallsImporter implements Callable<Void> {
             } else {
                 sourceFileList.parsedFiles.addAll(sfl.parsedFiles);
             }
-        }
-
-        static final boolean isCodeFile(String s) {
-            return s.endsWith(".java") || s.endsWith(".go") || s.endsWith(".scala") || s.endsWith(".js") || s.endsWith(".cs") || s.endsWith(".ex") || s.endsWith(".exs") || s.endsWith(".py") || s.endsWith(".ts");
         }
 
         public HashSet<String> flappingLines(Build parentBuild, Repository repo, Build mostRecent) throws IOException {
@@ -770,11 +767,15 @@ public class CoverallsImporter implements Callable<Void> {
 
         }
 
-        private transient boolean namesFixed;
-
+        /*
+        * Checking sourceFileList, making sure file names are correct and deleting them in case they are not existent
+        * in the Git repository.
+        * */
         private void checkAndFixNames(HashSet<String> validNames) {
-            if (namesFixed)
-                return;
+
+            if (namesFixed) return;
+
+            System.out.println("Fixing file names in sourceFileList");
             if (this.repo_name.equals("ilovepi/Compiler")) {
                 for (SourceFile sf : sourceFileList.parsedFiles) {
                     sf.name = "compiler" + sf.name;
@@ -798,68 +799,62 @@ public class CoverallsImporter implements Callable<Void> {
                 }
             }
             namesFixed = true;
+
+            System.out.println("Removing non-existent files from sourceFileList");
             HashSet<SourceFile> filesToIgnore = new HashSet<>();
             for (SourceFile sf : sourceFileList.parsedFiles) {
                 if (!validNames.contains(sf.name)) {
-                    System.out.println("Missing: " + sf.name);
+                    System.out.println("Git repo does not contain file: " + sf.name);
                     filesToIgnore.add(sf);
                 }
             }
             sourceFileList.parsedFiles.removeAll(filesToIgnore);
         }
 
+        HashSet<String> getFilesInGit(Repository repo, RevTree commitTree){
+            TreeWalk treeWalk = new TreeWalk(repo);
+            HashSet<String> filesInGit = new HashSet<>();
+            try {
+                treeWalk.addTree(commitTree);
+                treeWalk.setRecursive(true);
+                while (treeWalk.next()) {
+                    filesInGit.add(treeWalk.getPathString());
+                }
+            } catch (java.io.IOException e) {
+                e.printStackTrace();
+            }
+            treeWalk.close();
+            return filesInGit;
+        }
+
         public SrcTestGeneralDiffResult diffAgainst(Build parentBuild, Repository repo, PrintWriter debugWriter) throws IOException {
             ObjectReader reader = repo.newObjectReader();
             CanonicalTreeParser thisCommParser = new CanonicalTreeParser();
+            CanonicalTreeParser parentParser = new CanonicalTreeParser();
             SrcTestGeneralDiffResult summary = new SrcTestGeneralDiffResult();
 
             try (RevWalk revWalk = new RevWalk(repo)) {
-                // OK, compare all of the files
-                // System.out.println(commit_sha);
-                // System.out.println(parentBuild.commit_sha);
+                // Compare all of the files
+
                 RevCommit curCommit = revWalk.parseCommit(repo.resolve(commit_sha));
                 RevTree curCommitTree = curCommit.getTree();
+
                 commitTime = curCommit.getCommitTime();
 
                 RevCommit prevCommit = revWalk.parseCommit(repo.resolve(parentBuild.commit_sha));
                 RevTree prevCommitTree = prevCommit.getTree();
 
+                HashSet<String> filesInCurGit = getFilesInGit(repo, curCommitTree);
+                HashSet<String> filesInPrevGit = getFilesInGit(repo, prevCommitTree);
 
-                TreeWalk debugWalk = new TreeWalk(repo);
-                debugWalk.addTree(curCommitTree);
-                debugWalk.setRecursive(true);
-                HashSet<String> filesInCurGit = new HashSet<>();
-                while (debugWalk.next()) {
-                    filesInCurGit.add(debugWalk.getPathString());
-                }
-                debugWalk.close();
-
-                debugWalk = new TreeWalk(repo);
-                debugWalk.addTree(prevCommitTree);
-                debugWalk.setRecursive(true);
-                HashSet<String> filesInPrevGit = new HashSet<>();
-                while (debugWalk.next()) {
-                    filesInPrevGit.add(debugWalk.getPathString());
-                }
-                debugWalk.close();
-                ;
                 this.checkAndFixNames(filesInCurGit);
                 parentBuild.checkAndFixNames(filesInPrevGit);
 
-                HashMap<String, SourceFile> filesInNew = new HashMap<>();
-                for (SourceFile sf : sourceFileList.parsedFiles)
-                    filesInNew.put(sf.name, sf);
-                HashMap<String, SourceFile> filesInParent = new HashMap<>();
-                for (SourceFile sf : parentBuild.sourceFileList.parsedFiles)
-                    filesInParent.put(sf.name, sf);
-
-
                 thisCommParser.reset(reader, curCommitTree);
-                CanonicalTreeParser parentParser = new CanonicalTreeParser();
                 parentParser.reset(reader, prevCommitTree);
-                List<DiffEntry> entries = null;
-                HashSet<String> modifiedFiles = new HashSet<>();
 
+                List<DiffEntry> entries;
+                HashSet<String> modifiedFiles = new HashSet<>();
 
                 try (DiffFormatter f = new DiffFormatter(System.out)) {
                     f.setRepository(repo);
@@ -1044,6 +1039,13 @@ public class CoverallsImporter implements Callable<Void> {
                         }
                     }
                 }
+
+                HashMap<String, SourceFile> filesInNew = new HashMap<>();
+                for (SourceFile sf : sourceFileList.parsedFiles)
+                    filesInNew.put(sf.name, sf);
+                HashMap<String, SourceFile> filesInParent = new HashMap<>();
+                for (SourceFile sf : parentBuild.sourceFileList.parsedFiles)
+                    filesInParent.put(sf.name, sf);
 
                 // Find all of the files that changed - those are the
                 // only ones we need to open to map
@@ -1272,6 +1274,10 @@ public class CoverallsImporter implements Callable<Void> {
 
     }
 
+    /**
+     * This class describes a summary of one or multiple diffs in terms of aggregated numbers. It does not go into any
+     *  details with respect to which lines have been changed and how they have been changed.
+     */
     static class DiffResult implements Serializable {
 
         /**
@@ -1297,31 +1303,6 @@ public class CoverallsImporter implements Callable<Void> {
         int totalStatementsNow;
         int totalStatementsHitPrev;
         int totalStatementsPrev;
-
-
-        public void accumulate(DiffResult o) {
-            if (o == null)
-                return;
-            this.modifiedLinesNewlyHit += o.modifiedLinesNewlyHit;
-            this.modifiedLinesNoLongerHit += o.modifiedLinesNoLongerHit;
-            this.modifiedLinesStillHit += o.modifiedLinesStillHit;
-            this.newLinesHit += o.newLinesHit;
-            this.newLinesNotHit += o.newLinesNotHit;
-            this.deletedLinesHit += o.deletedLinesHit;
-            this.deletedLinesNotHit += o.deletedLinesNotHit;
-            this.newFileLinesHit += o.newFileLinesHit;
-            this.newFileLinesNotHit += o.newFileLinesNotHit;
-            this.deletedFileLinesHit += o.deletedFileLinesHit;
-            this.deletedFileLinesNotHit += o.deletedFileLinesNotHit;
-            this.oldLinesNewlyHit += o.oldLinesNewlyHit;
-            this.oldLinesNoLongerHit += o.oldLinesNoLongerHit;
-            this.nStatementsHitInBoth += o.nStatementsHitInBoth;
-            this.nStatementsHitInEither += o.nStatementsHitInEither;
-            this.totalStatementsHitNow += o.totalStatementsHitNow;
-            this.totalStatementsNow += o.totalStatementsNow;
-            this.totalStatementsHitPrev += o.totalStatementsHitPrev;
-            this.totalStatementsPrev += o.totalStatementsPrev;
-        }
 
         public static String toCSVHeader() {
             StringBuilder sb = new StringBuilder();
@@ -1382,6 +1363,30 @@ public class CoverallsImporter implements Callable<Void> {
             sb.append(",totalStatementsPrev");
             sb.append('\n');
             return sb.toString();
+        }
+
+        public void accumulate(DiffResult o) {
+            if (o == null)
+                return;
+            this.modifiedLinesNewlyHit += o.modifiedLinesNewlyHit;
+            this.modifiedLinesNoLongerHit += o.modifiedLinesNoLongerHit;
+            this.modifiedLinesStillHit += o.modifiedLinesStillHit;
+            this.newLinesHit += o.newLinesHit;
+            this.newLinesNotHit += o.newLinesNotHit;
+            this.deletedLinesHit += o.deletedLinesHit;
+            this.deletedLinesNotHit += o.deletedLinesNotHit;
+            this.newFileLinesHit += o.newFileLinesHit;
+            this.newFileLinesNotHit += o.newFileLinesNotHit;
+            this.deletedFileLinesHit += o.deletedFileLinesHit;
+            this.deletedFileLinesNotHit += o.deletedFileLinesNotHit;
+            this.oldLinesNewlyHit += o.oldLinesNewlyHit;
+            this.oldLinesNoLongerHit += o.oldLinesNoLongerHit;
+            this.nStatementsHitInBoth += o.nStatementsHitInBoth;
+            this.nStatementsHitInEither += o.nStatementsHitInEither;
+            this.totalStatementsHitNow += o.totalStatementsHitNow;
+            this.totalStatementsNow += o.totalStatementsNow;
+            this.totalStatementsHitPrev += o.totalStatementsHitPrev;
+            this.totalStatementsPrev += o.totalStatementsPrev;
         }
 
         public String toCSV() {
@@ -1456,9 +1461,6 @@ public class CoverallsImporter implements Callable<Void> {
     }
 
     static class SourceFileList implements Serializable {
-        /**
-         *
-         */
         private static final long serialVersionUID = 174237175589062016L;
         int total;
         int total_pages;
@@ -1474,9 +1476,6 @@ public class CoverallsImporter implements Callable<Void> {
     }
 
     static class SourceFile implements Serializable {
-        /**
-         *
-         */
         private static final long serialVersionUID = 8951794222372644260L;
         String name;
         int relevant_line_count;
