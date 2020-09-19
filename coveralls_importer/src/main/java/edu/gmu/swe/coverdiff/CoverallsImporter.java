@@ -1100,85 +1100,45 @@ public class CoverallsImporter implements Callable<Void> {
         DiffResult nonTest = new DiffResult();
         DiffResult test = new DiffResult();
         DiffResult all = new DiffResult();
+
         int modFiles = 0;
         int delFiles = 0;
         int insFiles = 0;
+
         int modFilesSrc = 0;
         int delFilesSrc = 0;
         int insFilesSrc = 0;
+
         int modFilesTest = 0;
         int delFilesTest = 0;
         int insFilesTest = 0;
 
-        int delLinesTest = 0;
-        int delLinesSrc = 0;
-        int insLinesTest = 0;
         int insLinesSrc = 0;
+        int delLinesSrc = 0;
 
+        int insLinesTest = 0;
+        int delLinesTest = 0;
+
+        // For src & test files
         int insLinesAllFiles = 0;
         int delLinesAllFiles = 0;
 
 
         static void appendHeader(StringBuilder sb, String prefix) {
             sb.append(',');
-            if (prefix != null)
-                sb.append(prefix);
-            sb.append("newHitLines,");
-            if (prefix != null)
-                sb.append(prefix);
-            sb.append("newNonHitLines,");
-            if (prefix != null)
-                sb.append(prefix);
-            sb.append("newFileHitLines,");
-            if (prefix != null)
-                sb.append(prefix);
-            sb.append("newFileNonHitLines,");
-            if (prefix != null)
-                sb.append(prefix);
-            sb.append("deletedLinesTested,");
-            if (prefix != null)
-                sb.append(prefix);
-            sb.append("deletedLinesNotTested,");
-            if (prefix != null)
-                sb.append(prefix);
-            sb.append("deletedFileLinesTested,");
-            if (prefix != null)
-                sb.append(prefix);
-            sb.append("deletedFileLinesNotTested,");
-            if (prefix != null)
-                sb.append(prefix);
-            sb.append("oldLinesNewlyTested,");
-            if (prefix != null)
-                sb.append(prefix);
-            sb.append("oldLinesNoLongerTested,");
-            if (prefix != null)
-                sb.append(prefix);
-            sb.append("modifiedLinesNewlyHit,");
-            if (prefix != null)
-                sb.append(prefix);
-            sb.append("modifiedLinesStillHit,");
-            if (prefix != null)
-                sb.append(prefix);
-            sb.append("modifiedLinesNotHit,");
-            if (prefix != null)
-                sb.append(prefix);
-            sb.append("nStatementsInBoth,");
-            if (prefix != null)
-                sb.append(prefix);
-            sb.append("nStatementsInEither,");
-            // sb.append(",nStatementsThis");
-            if (prefix != null)
-                sb.append(prefix);
-            sb.append("totalStatementsHitNow,");
-            if (prefix != null)
-                sb.append(prefix);
-            sb.append("totalStatementsHitPrev,");
-            if (prefix != null)
-                sb.append(prefix);
-            sb.append("totalStatementsNow,");
-            if (prefix != null)
-                sb.append(prefix);
-            sb.append("totalStatementsPrev");
+            String[] headerElements = {
+                    "newHitLines,", "newNonHitLines,", "newFileHitLines,", "newFileNonHitLines,",
+                    "deletedLinesTested,", "deletedLinesNotTested,", "deletedFileLinesTested,",
+                    "deletedFileLinesNotTested,", "oldLinesNewlyTested,", "oldLinesNoLongerTested,",
+                    "modifiedLinesNewlyHit,", "modifiedLinesStillHit,", "modifiedLinesNotHit,",
+                    "nStatementsInBoth,", "nStatementsInEither,", "totalStatementsHitNow,",
+                    "totalStatementsHitPrev,", "totalStatementsNow,", "totalStatementsPrev,"
+            };
+            for ( String headerEl : headerElements ) {
+                if (prefix != null)
+                    sb.append(prefix);
+                sb.append(headerEl);
+            }
         }
 
         public static String toCSVHeader() {
