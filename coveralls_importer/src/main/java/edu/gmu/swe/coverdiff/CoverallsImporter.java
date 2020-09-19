@@ -1073,7 +1073,6 @@ public class CoverallsImporter implements Callable<Void> {
                 // attached. Diff the coverage.
                 for (Entry<String, SourceFile> e : filesInNew.entrySet()) {
                     SourceFile prev = filesInParent.get(e.getKey());
-//					System.out.println("currCommit: "+curCommit);
                     DiffResult diff = e.getValue().diff(prev);
                     if (debugWriter != null)
                         debugWriter.print(this.repo_name + ',' + this.commit_sha + ',' + parentBuild.commit_sha + ',' + this.branch + ',' + e.getKey() + ',' + diff.toCSV());
@@ -1277,32 +1276,21 @@ public class CoverallsImporter implements Callable<Void> {
 
         public static String toCSVDebugHeader() {
             StringBuilder sb = new StringBuilder();
-            sb.append("repo");
-            sb.append(",childSha");
-            sb.append(",parentSha");
-            sb.append(",childBranch");
-            sb.append(",file");
-            sb.append(",newHitLines");
-            sb.append(",newNonHitLines");
-            sb.append(",newFileHitLines");
-            sb.append(",newFileNonHitLines");
-            sb.append(",deletedLinesTested");
-            sb.append(",deletedLinesNotTested");
-            sb.append(",deletedFileLinesTested");
-            sb.append(",deletedFileLinesNotTested");
-            sb.append(",oldLinesNewlyTested");
-            sb.append(",oldLinesNoLongerTested");
-            sb.append(",modifiedLinesNewlyHit");
-            sb.append(",modifiedLinesStillHit");
-            sb.append(",modifiedLinesNotHit");
-            sb.append(",nStatementsInBoth");
-            sb.append(",nStatementsInEither");
-            // sb.append(",nStatementsThis");
-            sb.append(",totalStatementsHitNow");
-            sb.append(",totalStatementsHitPrev");
-            sb.append(",totalStatementsNow");
-            sb.append(",totalStatementsPrev");
-            sb.append('\n');
+            String[] debugHeaderElements = {
+                "repo", ",childSha", ",parentSha", ",childBranch", 
+                ",file", ",newHitLines", ",newNonHitLines", ",newFileHitLines", 
+                ",newFileNonHitLines", ",deletedLinesTested", ",deletedLinesNotTested", 
+                ",deletedFileLinesTested", ",deletedFileLinesNotTested", 
+                ",oldLinesNewlyTested", ",oldLinesNoLongerTested", 
+                ",modifiedLinesNewlyHit", ",modifiedLinesStillHit", 
+                ",modifiedLinesNotHit", ",nStatementsInBoth", ",nStatementsInEither",
+                // ",nStatementsThis"
+                ",totalStatementsHitNow", ",totalStatementsHitPrev", ",totalStatementsNow", 
+                ",totalStatementsPrev", "\n"
+            };
+            for (String headerEl : debugHeaderElements ) {
+                sb.append(headerEl);
+            }
             return sb.toString();
         }
 
