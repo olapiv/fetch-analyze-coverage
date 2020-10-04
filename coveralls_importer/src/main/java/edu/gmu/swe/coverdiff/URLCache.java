@@ -23,7 +23,7 @@ public class URLCache {
 	}
 
 	private String toCacheFileName(String url) {
-		return url.replace('/', '-');
+		return url.replace('/', '-').replace('.', '-');
 	}
 
 	public synchronized String get(String url) throws IOException {
