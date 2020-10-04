@@ -3,11 +3,14 @@ package edu.gmu.swe.coverdiff;
 import java.io.*;
 import java.nio.file.Files;
 import java.util.*;
+import java.lang.reflect.*;
 import java.util.Map.Entry;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.diff.DiffEntry;
@@ -185,7 +188,6 @@ public class CoverallsImporter implements Callable<Void> {
         return CompletableFuture.supplyAsync(() -> {
             boolean cacheable = url.startsWith("https://coveralls.io/builds/");
             if (cacheable) {
-
                 try {
                     String ret = cache.get(url);
                     if (ret != null) {
@@ -194,7 +196,6 @@ public class CoverallsImporter implements Callable<Void> {
                 } catch (IOException e) {
                     e.printStackTrace();
                 }
-
             }
             rateLimiter.acquire();
 
@@ -443,6 +444,9 @@ public class CoverallsImporter implements Callable<Void> {
         int parentNotFound = 0;
         for (Build b : bl.builds) {
 
+            // Trying to find ancestor within the build list provided by coveralls.io. Thereby, the stats provided by
+            // coveralls.io can also be used (e.g. coverage ratio). Even though this data is sampled across single
+            // commits, we can also aggregate them across multiple commits and "walk the tree" for them with jgit.
             Build ancestorBuild = findAncestor(b.commit_sha, builds, repo);
 
             if (ancestorBuild == null) {
@@ -989,6 +993,8 @@ public class CoverallsImporter implements Callable<Void> {
                         EditList el = f.toFileHeader(e).toEditList();
                         summarizeDiffEntry(el, summary, e);
 
+                        // We don't care if a file was inserted or deleted, since the lines in these files cannot be
+                        // compared between two builds. We only care about modified files.
                         if (e.getChangeType() != ChangeType.MODIFY) continue;
 
                         // Find which lines are new, modified, deleted
@@ -1046,7 +1052,7 @@ public class CoverallsImporter implements Callable<Void> {
                         fos.write(dataOld);
                         fos.close();
 
-                        // TODO: Check what this does:
+                        // bash diff: Compare files line by line. Matches line numbers of all unchanged lines.
                         String diff1 = systemCall(Arrays.asList("/bin/bash", "-c", "diff --unchanged-line-format=\"%dn,%c'\\12'\" --new-line-format=\"n%c'\\12'\" --old-line-format=\"\"  " + newTmp.getAbsolutePath() + " " + oldTmp.getAbsolutePath() + " | awk '/,/{n++;print $0n} /n/{n++}'"));
                         String[] offsetStrings = diff1.split("\n");
                         newTmp.delete();
@@ -1069,8 +1075,7 @@ public class CoverallsImporter implements Callable<Void> {
 
                 }
 
-                // OK, now any file that changed have a line map
-                // attached. Diff the coverage.
+                // Ok, now any file that has been modified has a lineMapping attached. Now use this to diff the coverage.
                 for (Entry<String, SourceFile> e : filesInNew.entrySet()) {
                     SourceFile prev = filesInParent.get(e.getKey());
                     DiffResult diff = e.getValue().diff(prev);
@@ -1148,8 +1153,6 @@ public class CoverallsImporter implements Callable<Void> {
             sb.append(",childBranch");
             sb.append(",timestamp");
             appendHeader(sb, null);
-//			appendHeader(sb,"test_");
-//			appendHeader(sb,"src_");
             sb.append(",insFilesSrc,insFilesTest,modFilesSrc,modFilesTest,delFilesSrc,delFilesTest,newLinesSrc,newLinesTest,delLinesSrc,delLinesTest,insLinesAllFiles,delLinesAllFiles");
             sb.append('\n');
             return sb.toString();
@@ -1162,16 +1165,10 @@ public class CoverallsImporter implements Callable<Void> {
             sb.append(",parentSha");
             sb.append(",childBranch,file");
             appendHeader(sb, null);
-//			appendHeader(sb,"test");
-//			appendHeader(sb,"src");
             return sb.toString();
         }
 
         public void accumulate(DiffResult o, String fileName) {
-//			if(fileName.toLowerCase().contains("test"))
-//				test.accumulate(o);
-//			else
-//				nonTest.accumulate(o);
             all.accumulate(o);
         }
 
@@ -1180,10 +1177,6 @@ public class CoverallsImporter implements Callable<Void> {
             StringBuilder sb = new StringBuilder();
             all.toCSV(sb);
             sb.append(',');
-//			test.toCSV(sb);
-//			sb.append(',');
-//			nonTest.toCSV(sb);
-//			sb.append(',');
             sb.append(insFilesSrc);
             sb.append(',');
             sb.append(insFilesTest);
@@ -1220,102 +1213,97 @@ public class CoverallsImporter implements Callable<Void> {
      */
     static class DiffResult implements Serializable {
 
-        /**
-         *
-         */
         private static final long serialVersionUID = -766592368068201095L;
+        private static List<String> standardCSVHeaders = Arrays.asList("repo", ",childSha", ",parentSha", ",childBranch", ",file");
         int modifiedLinesNewlyHit;
-        int modifiedLinesNoLongerHit;
+        int modifiedLinesNoLongerHit;  // modifiedLinesNotHit TODO: Find out what this does exactly
         int modifiedLinesStillHit;
-        int newLinesHit;
-        int newLinesNotHit;
-        int newFileLinesHit;
-        int newFileLinesNotHit;
-        int deletedLinesHit;
-        int deletedLinesNotHit;
-        int deletedFileLinesHit;
-        int deletedFileLinesNotHit;
-        int oldLinesNewlyHit;
-        int oldLinesNoLongerHit;
-        int nStatementsHitInBoth;
-        int nStatementsHitInEither;
+        int newLinesHit;  // newHitLines
+        int newLinesNotHit;  // newNonHitLines
+        int newFileLinesHit;  // newFileHitLines
+        int newFileLinesNotHit;  // newFileNonHitLines
+        int deletedLinesHit;  // deletedLinesTested
+        int deletedLinesNotHit;  // deletedLinesNotTested
+        int deletedFileLinesHit;  // deletedFileLinesTested
+        int deletedFileLinesNotHit;  // deletedFileLinesNotTested
+        int oldLinesNewlyHit;  // oldLinesNewlyTested
+        int oldLinesNoLongerHit;  // oldLinesNoLongerTested
+        int nStatementsHitInBoth;  // nStatementsInBoth
+        int nStatementsHitInEither;  // nStatementsInEither
         int totalStatementsHitNow;
         int totalStatementsNow;
         int totalStatementsHitPrev;
         int totalStatementsPrev;
 
+        public static List<Field> getPublicDeclaredFields() {
+            List<Field> publicFields = new ArrayList<>();
+            Field[] fields = DiffResult.class.getDeclaredFields();
+            for (Field field : fields) {
+                int modifiers = field.getModifiers();
+                if(Modifier.isProtected(modifiers) || Modifier.isPrivate(modifiers)) {
+                    continue;
+                }
+                publicFields.add(field);
+            }
+            return publicFields;
+        }
+
+        public static List<String> getFieldNames() {
+            List<Field> fields = DiffResult.getPublicDeclaredFields();
+            List<String> result = new ArrayList<>();
+            for (Field field : fields) {
+                int modifiers = field.getModifiers();
+                if(Modifier.isProtected(modifiers) || Modifier.isPrivate(modifiers)) {
+                    continue;
+                }
+                result.add(field.getName());
+            }
+            return result;
+        }
+
+        public static List<String> getCSVHeaders() {
+            // Merge field names and standardCSVHeaders
+            List<String> stringFields = getFieldNames();
+            List<String> newList = Stream.of(standardCSVHeaders, stringFields)
+                    .flatMap(Collection::stream)
+                    .collect(Collectors.toList());
+            return newList;
+        }
+
         public static String toCSVHeader() {
             StringBuilder sb = new StringBuilder();
-            sb.append("repo");
-            sb.append(",childSha");
-            sb.append(",parentSha");
-            sb.append(",childBranch");
-            sb.append(",newHitLines");
-            sb.append(",newNonHitLines");
-            sb.append(",newFileHitLines");
-            sb.append(",newFileNonHitLines");
-            sb.append(",deletedLinesTested");
-            sb.append(",deletedLinesNotTested");
-            sb.append(",deletedFileLinesTested");
-            sb.append(",deletedFileLinesNotTested");
-            sb.append(",oldLinesNewlyTested");
-            sb.append(",oldLinesNoLongerTested");
-            sb.append(",modifiedLinesNewlyHit");
-            sb.append(",modifiedLinesStillHit");
-            sb.append(",modifiedLinesNotHit");
-            sb.append(",nStatementsInBoth");
-            sb.append(",nStatementsInEither");
-            // sb.append(",nStatementsThis");
-            sb.append(",totalStatementsHitNow");
-            sb.append(",totalStatementsHitPrev");
-            sb.append(",totalStatementsNow");
-            sb.append(",totalStatementsPrev");
-            sb.append('\n');
+            List<String> csvHeaders = getCSVHeaders();
+            for (String headerEl : csvHeaders ) {
+                sb.append(headerEl);
+            }
+            sb.append("\n");
             return sb.toString();
         }
 
         public static String toCSVDebugHeader() {
             StringBuilder sb = new StringBuilder();
-            String[] debugHeaderElements = {
-                "repo", ",childSha", ",parentSha", ",childBranch", 
-                ",file", ",newHitLines", ",newNonHitLines", ",newFileHitLines", 
-                ",newFileNonHitLines", ",deletedLinesTested", ",deletedLinesNotTested", 
-                ",deletedFileLinesTested", ",deletedFileLinesNotTested", 
-                ",oldLinesNewlyTested", ",oldLinesNoLongerTested", 
-                ",modifiedLinesNewlyHit", ",modifiedLinesStillHit", 
-                ",modifiedLinesNotHit", ",nStatementsInBoth", ",nStatementsInEither",
-                // ",nStatementsThis"
-                ",totalStatementsHitNow", ",totalStatementsHitPrev", ",totalStatementsNow", 
-                ",totalStatementsPrev", "\n"
-            };
-            for (String headerEl : debugHeaderElements ) {
+            List<String> csvHeaders = getCSVHeaders();
+            for (String headerEl : csvHeaders ) {
                 sb.append(headerEl);
             }
+            sb.append("\n");
             return sb.toString();
         }
 
         public void accumulate(DiffResult o) {
             if (o == null)
                 return;
-            this.modifiedLinesNewlyHit += o.modifiedLinesNewlyHit;
-            this.modifiedLinesNoLongerHit += o.modifiedLinesNoLongerHit;
-            this.modifiedLinesStillHit += o.modifiedLinesStillHit;
-            this.newLinesHit += o.newLinesHit;
-            this.newLinesNotHit += o.newLinesNotHit;
-            this.deletedLinesHit += o.deletedLinesHit;
-            this.deletedLinesNotHit += o.deletedLinesNotHit;
-            this.newFileLinesHit += o.newFileLinesHit;
-            this.newFileLinesNotHit += o.newFileLinesNotHit;
-            this.deletedFileLinesHit += o.deletedFileLinesHit;
-            this.deletedFileLinesNotHit += o.deletedFileLinesNotHit;
-            this.oldLinesNewlyHit += o.oldLinesNewlyHit;
-            this.oldLinesNoLongerHit += o.oldLinesNoLongerHit;
-            this.nStatementsHitInBoth += o.nStatementsHitInBoth;
-            this.nStatementsHitInEither += o.nStatementsHitInEither;
-            this.totalStatementsHitNow += o.totalStatementsHitNow;
-            this.totalStatementsNow += o.totalStatementsNow;
-            this.totalStatementsHitPrev += o.totalStatementsHitPrev;
-            this.totalStatementsPrev += o.totalStatementsPrev;
+            List<Field> fields = DiffResult.getPublicDeclaredFields();
+            for (Field field : fields) {
+                field.setAccessible(true);
+                try {
+                    int thisVal = (Integer) field.get(this);
+                    int otherVal = (Integer) field.get(o);
+                    field.set(this, thisVal + otherVal);
+                } catch (java.lang.IllegalAccessException ex) {
+                    ex.printStackTrace();
+                }
+            }
         }
 
         public String toCSV() {
@@ -1326,67 +1314,39 @@ public class CoverallsImporter implements Callable<Void> {
         }
 
         public void toCSV(StringBuilder sb) {
-            sb.append(newLinesHit);
-            sb.append(',');
-            sb.append(newLinesNotHit);
-            sb.append(',');
-            sb.append(newFileLinesHit);
-            sb.append(',');
-            sb.append(newFileLinesNotHit);
-            sb.append(',');
-            sb.append(deletedLinesHit);
-            sb.append(',');
-            sb.append(deletedLinesNotHit);
-            sb.append(',');
-            sb.append(deletedFileLinesHit);
-            sb.append(',');
-            sb.append(deletedFileLinesNotHit);
-            sb.append(',');
-            sb.append(oldLinesNewlyHit);
-            sb.append(',');
-            sb.append(oldLinesNoLongerHit);
-            sb.append(',');
-            sb.append(modifiedLinesNewlyHit);
-            sb.append(',');
-            sb.append(modifiedLinesStillHit);
-            sb.append(',');
-            sb.append(modifiedLinesNoLongerHit);
-            sb.append(',');
-            sb.append(nStatementsHitInBoth);
-            sb.append(',');
-            sb.append(nStatementsHitInEither);
-            sb.append(',');
-            sb.append(totalStatementsHitNow);
-            sb.append(',');
-            sb.append(totalStatementsHitPrev);
-            sb.append(',');
-            sb.append(totalStatementsNow);
-            sb.append(',');
-            sb.append(totalStatementsPrev);
+            List<Field> fields = DiffResult.getPublicDeclaredFields();
+            String prefix = "";
+            for (Field field : fields) {
+                sb.append(prefix);
+                prefix = ",";
+                field.setAccessible(true);
+                try {
+                    int thisVal = (Integer) field.get(this);
+                    sb.append(thisVal);
+                } catch (java.lang.IllegalAccessException ex) {
+                    ex.printStackTrace();
+                }
+            }
         }
 
         @Override
         public String toString() {
-            return "DiffResult [modifiedLinesHit=" + modifiedLinesNewlyHit +
-                    ", modifiedLinesNoLongerHit=" + modifiedLinesNoLongerHit +
-                    ", newLinesHit=" + newLinesHit +
-                    ", newLinesNotHit=" + newLinesNotHit +
-                    ", newFileLinesHit=" + newFileLinesHit +
-                    ", newFileLinesNotHit=" + newFileLinesNotHit +
-                    ", deletedLinesHit=" + deletedLinesHit +
-                    ", deletedLinesNotHit=" + deletedLinesNotHit +
-                    ", deletedFileLinesHit=" + deletedFileLinesHit +
-                    ", deletedFileLinesNotHit=" + deletedFileLinesNotHit +
-                    ", oldLinesNewlyHit=" + oldLinesNewlyHit +
-                    ", oldLinesNoLongerHit=" + oldLinesNoLongerHit +
-                    ", nStatementsInBoth=" + nStatementsHitInBoth +
-                    ", nStatementsHitInEither=" + nStatementsHitInEither +
-                    ", totalStatementsHitNow=" + totalStatementsHitNow +
-                    ", totalStatementsNow=" + totalStatementsNow +
-                    ", totalStatementsHitPrev=" + totalStatementsHitPrev +
-                    ", totalStatementsPrev=" + totalStatementsPrev + "]";
+            String prefix = "";
+            String result = "DiffResult [";
+            List<Field> fields = DiffResult.getPublicDeclaredFields();
+            for (Field field : fields) {
+                field.setAccessible(true);
+                try {
+                    int thisVal = (Integer) field.get(this);
+                    result += prefix + field.getName() + "=" + thisVal;
+                    prefix = ", ";
+                } catch (java.lang.IllegalAccessException ex) {
+                    ex.printStackTrace();
+                }
+            }
+            result += "]";
+            return result;
         }
-
     }
 
     static class SourceFileList implements Serializable {
@@ -1437,219 +1397,253 @@ public class CoverallsImporter implements Callable<Void> {
         public HashSet<String> getFlappingLines(SourceFile prev, HashMap<Integer, Integer> lineMapping, HashMap<Integer, Integer> futureMap) {
             HashSet<String> ret = new HashSet<>();
 
-            if (prev != null && prev.coverage != null) {
-                //existedBefore, but not now
-                if (this.coverage == null || (this.name == null && this.coverage.size() == 0)) {
-                } else {
-                    // File in both
-                    HashSet<Integer> linesOnlyInPrev = new HashSet<>();
-                    for (int i = 0; i < prev.coverage.size(); i++)
-                        linesOnlyInPrev.add(i); //after we successfully map a line from NOW to PREV we remove from this list
-                    for (int line = 0; line < coverage.size(); line++) {
-                        Integer curHits = coverage.get(line);
-                        Integer prevHits = null;
-                        int lineInFuture = line;
-                        if (futureMap != null) {
-                            if (futureMap.containsKey(line))
-                                lineInFuture = futureMap.get(line);
-                            else
-                                continue;
-                        }
-                        if (lineMapping == null) {
-                            if (prev.coverage.size() > line) {
-                                prevHits = prev.coverage.get(line);
-                                linesOnlyInPrev.remove(line);
-                            }
-                        } else if (lineMapping.containsKey(line) && lineMapping.get(line) < prev.coverage.size()) {
-                            int mapping = lineMapping.get(line);
-                            linesOnlyInPrev.remove(mapping);
-                            prevHits = prev.coverage.get(mapping);
-                            //else
-                            //	linesOnlyInPrev.add(line);
-                        }
-                        if (curHits != null) {
-                            // Is a statement now.
-                            if ((prevHits == null || prevHits == 0)) {
-                                // Wasnt hit before
-                                if (curHits > 0) {
-                                    // Line not hit before, hit now
-                                    if (newLines.contains(line)) {
-                                    } else {
-                                        ret.add(this.name + "," + lineInFuture + ",1");
-                                    }
-                                }
-                            } else if (prevHits != null && prevHits > 0) {
-                                // Was hit before
-                                if (curHits == 0) {
-                                    ret.add(this.name + "," + lineInFuture + ",0");
-                                }
-                            }
+            if (prev == null || prev.coverage == null) return ret;
+
+            // existedBefore, but not now
+            if (this.coverage == null || (this.name == null && this.coverage.size() == 0)) return ret;
+
+            // File in both
+            HashSet<Integer> linesOnlyInPrev = new HashSet<>();
+            for (int i = 0; i < prev.coverage.size(); i++)
+                linesOnlyInPrev.add(i); //after we successfully map a line from NOW to PREV we remove from this list
+
+            for (int line = 0; line < coverage.size(); line++) {
+                Integer curHits = coverage.get(line);
+                Integer prevHits = null;
+                int lineInFuture = line;
+                if (futureMap != null) {
+                    if (futureMap.containsKey(line))
+                        lineInFuture = futureMap.get(line);
+                    else
+                        continue;
+                }
+                if (lineMapping == null) {
+                    if (prev.coverage.size() > line) {
+                        prevHits = prev.coverage.get(line);
+                        linesOnlyInPrev.remove(line);
+                    }
+                } else if (lineMapping.containsKey(line) && lineMapping.get(line) < prev.coverage.size()) {
+                    int mapping = lineMapping.get(line);
+                    linesOnlyInPrev.remove(mapping);
+                    prevHits = prev.coverage.get(mapping);
+                }
+
+                if (curHits == null) continue;
+
+                // Is a statement now.
+                if ((prevHits == null || prevHits == 0)) {
+                    // Was not hit before
+                    if (curHits > 0) {
+                        // Line not hit before, hit now
+                        if (newLines.contains(line)) {
+                        } else {
+                            ret.add(this.name + "," + lineInFuture + ",1");
                         }
                     }
+                } else if (prevHits != null && prevHits > 0) {
+
+                    // Was hit before
+                    if (curHits == 0) {
+                        ret.add(this.name + "," + lineInFuture + ",0");
+                    }
+
                 }
+
             }
+
             return ret;
         }
 
         public DiffResult diff(SourceFile prev) {
             DiffResult ret = new DiffResult();
 
+            // Old or modified file that had no coverage
+            if (prev != null && prev.coverage == null) {
+                for (Integer i : deletedLines) {
+                    if (i >= lineMapping.size()) continue;
+                    ret.deletedLinesNotHit++;
+                }
+            }
+
+            // Old or modified file that had coverage
             if (prev != null && prev.coverage != null) {
-                //existedBefore, but not now
+
+                // Had coverage previously, but none available now. Calling this "deletedFileLines" (not "deletedLines")
                 if (this.coverage == null || (this.name == null && this.coverage.size() == 0)) {
                     for (int line = 1; line < prev.coverage.size(); line++) {
                         Integer prevHits = prev.coverage.get(line);
-                        if (prevHits != null) {
-                            if (prevHits > 0) {
-                                ret.deletedFileLinesHit++;
-                            } else {
-                                ret.deletedFileLinesNotHit++;
-                            }
-                        }
+                        if (prevHits == null) continue;
+                        if (prevHits > 0) ret.deletedFileLinesHit++;
+                        if (prevHits == 0) ret.deletedFileLinesNotHit++;
                     }
-                } else {
-                    // File in both
-                    HashSet<Integer> linesOnlyInPrev = new HashSet<>();
-                    for (int i = 1; i < prev.coverage.size(); i++)
-                        linesOnlyInPrev.add(i); //after we successfully map a line from NOW to PREV we remove from this list
-                    for (int line = 1; line < coverage.size(); line++) {
-                        Integer curHits = coverage.get(line);
-                        Integer prevHits = null;
-                        if (lineMapping == null) {
-                            if (prev.coverage.size() > line) {
-                                prevHits = prev.coverage.get(line);
-                                linesOnlyInPrev.remove(line);
-                            }
-                        } else if (lineMapping.containsKey(line) && lineMapping.get(line) < prev.coverage.size()) {
-                            int mapping = lineMapping.get(line);
-                            linesOnlyInPrev.remove(mapping);
-                            prevHits = prev.coverage.get(mapping);
-                            //else
-                            //	linesOnlyInPrev.add(line);
+                    return ret;
+                }
+
+                // File in both
+                HashSet<Integer> linesOnlyInPrev = new HashSet<>();
+
+                for (int i = 1; i < prev.coverage.size(); i++)
+                    // After we successfully map a line from NOW to PREV we remove from this list
+                    linesOnlyInPrev.add(i);
+
+                for (int line = 1; line < coverage.size(); line++) {
+
+                    Integer curHits = coverage.get(line);
+                    Integer prevHits = null;
+
+                    if (lineMapping == null) {
+                        if (prev.coverage.size() > line) {
+                            prevHits = prev.coverage.get(line);
+                            linesOnlyInPrev.remove(line);
                         }
-                        if (curHits != null) {
-                            // Is a statement now.
-                            ret.totalStatementsNow++;
-                            if (prevHits != null)
-                                ret.totalStatementsPrev++;
-                            if ((prevHits == null || prevHits == 0)) {
-                                // Wasnt hit before
-                                if (curHits > 0) {
-                                    // Line not hit before, hit now
-                                    ret.nStatementsHitInEither++;
-                                    ret.totalStatementsHitNow++;
-                                    if (newLines.contains(line)) {
-                                        // And new
-                                        ret.newLinesHit++;
-                                    } else {
-                                        ret.oldLinesNewlyHit++;
-                                    }
-                                } else if (curHits < 1) {
-                                    if (prevHits == null) {
-                                        ret.newLinesNotHit++;
-                                    }
-                                }
-                            } else if (prevHits != null && prevHits > 0) {
-                                // Was hit before
-                                ret.nStatementsHitInEither++;
-                                ret.totalStatementsHitPrev++;
-                                if (curHits > 0) {
-                                    // Was hit before AND now
-                                    ret.nStatementsHitInBoth++;
-                                    ret.totalStatementsHitNow++;
-                                } else {
-                                    // Was hit before but NOT now
-                                    ret.oldLinesNoLongerHit++;
-                                }
-                            }
-                        } else if (prevHits != null) {
-                            ret.totalStatementsPrev++;
-                            if (prevHits > 0) {
-                                ret.totalStatementsHitPrev++;
-                                ret.nStatementsHitInEither++;
-                            }
-                        }
+                    } else if (lineMapping.containsKey(line) && lineMapping.get(line) < prev.coverage.size()) {
+
+                        // Getting corresponding line in previous file:
+                        int mapping = lineMapping.get(line);
+
+                        linesOnlyInPrev.remove(mapping);
+                        prevHits = prev.coverage.get(mapping);
                     }
 
-                    // Now collect deleted lines
-                    for (Integer i : deletedLines) {
-                        //System.out.println(i);
-                        int prevLineNumber = i;
-                        linesOnlyInPrev.remove(i);
-//					System.out.println("i:"+i);
-//					System.out.println("Prev.Cov Size:"+ prev.coverage.size());
-//					System.out.println("prevLineNumber: "+ prevLineNumber);
-                        if (prev.coverage.size() <= prevLineNumber) {
-                            if (prev.coverage.size() == 0)
-                                System.out.println("PROBLEM " + prevLineNumber + " vs " + prev.coverage.size() + " in " + this.name);
-                        }
-                        if (prev.coverage.size() > prevLineNumber) {
-                            Integer deletedLineCov = prev.coverage.get(prevLineNumber);
-                            if (deletedLineCov != null && deletedLineCov > 0) {
-                                ret.deletedLinesHit++;
-                                ret.nStatementsHitInEither++;
-                                ret.totalStatementsHitPrev++;
-                            } else if (deletedLineCov != null) {
-                                ret.deletedLinesNotHit++;
-                                ret.totalStatementsPrev++;
-                            }
-                        }
-                    }
-                    for (Integer line : linesOnlyInPrev) {
-                        Integer hit = prev.coverage.get(line);
-                        if (hit != null) {
-                            ret.totalStatementsPrev++;
-                            if (hit > 0) {
-                                ret.totalStatementsHitPrev++;
-                                ret.nStatementsHitInEither++;
-                            }
-                        }
-                    }
-                }
-            } else {
-                // Had 0 coverage prev
-                // Might still be a modified file, but did not get any coverage
-                // last run
-                if (coverage != null)
-                    for (int line = 1; line < coverage.size(); line++) {
-                        Integer curHits = coverage.get(line);
-                        if (curHits != null) {
-                            ret.totalStatementsNow++;
+                    if (curHits != null) {
+
+                        // Is a statement now.
+                        ret.totalStatementsNow++;
+
+                        if (prevHits != null) ret.totalStatementsPrev++;
+
+                        if ((prevHits == null || prevHits == 0)) {
+
+                            // Was not hit before
                             if (curHits > 0) {
-                                // Wasnt hit before, hit now
+                                // Line not hit before, hit now
                                 ret.nStatementsHitInEither++;
-//							ret.totalStatementsHitNow++;
+                                ret.totalStatementsHitNow++;
+
                                 if (newLines.contains(line)) {
                                     // And new
                                     ret.newLinesHit++;
                                 } else {
-                                    if (prev != null) {
-                                        //THIS IS UNREACHABLE
-                                        ret.oldLinesNewlyHit++;
-                                    } else {
-                                        ret.newFileLinesHit++;
-                                    }
-                                    ret.totalStatementsHitNow++;
+                                    ret.oldLinesNewlyHit++;
                                 }
-                            } else if (curHits == 0) {
-                                // Was hit before
-                                if (prev != null) {
-                                    //THIS IS UNREACHABLE
-                                    ret.oldLinesNoLongerHit++;
-                                } else {
-                                    ret.newFileLinesNotHit++;
+
+                            } else if (curHits < 1) {
+                                if (prevHits == null) {
+                                    ret.newLinesNotHit++;
                                 }
                             }
+                            continue;
+                        }
+
+                        // Was hit before
+                        ret.nStatementsHitInEither++;
+                        ret.totalStatementsHitPrev++;
+
+                        if (curHits > 0) {
+                            // Was hit before AND now
+                            ret.nStatementsHitInBoth++;
+                            ret.totalStatementsHitNow++;
+                            continue;
+                        }
+
+                        // Was hit before but NOT now (0)
+                        ret.oldLinesNoLongerHit++;
+
+                    } else if (prevHits != null) {
+                        ret.totalStatementsPrev++;
+                        if (prevHits > 0) {
+                            ret.totalStatementsHitPrev++;
+                            ret.nStatementsHitInEither++;
                         }
                     }
-                if (prev != null)
-                    for (Integer i : deletedLines) {
-                        if (i < lineMapping.size()) {
+                }
+
+                // Now collect deleted lines
+                for (Integer i : deletedLines) {
+
+                    int prevLineNumber = i;
+                    linesOnlyInPrev.remove(i);
+
+                    if (prev.coverage.size() <= prevLineNumber) {
+                        if (prev.coverage.size() == 0)
+                            System.out.println("PROBLEM " + prevLineNumber + " vs " + prev.coverage.size() + " in " + this.name);
+                    }
+
+                    if (prev.coverage.size() > prevLineNumber) {
+                        Integer deletedLineCov = prev.coverage.get(prevLineNumber);
+                        if (deletedLineCov != null && deletedLineCov > 0) {
+                            ret.deletedLinesHit++;
+                            ret.nStatementsHitInEither++;
+                            ret.totalStatementsHitPrev++;
+                        } else if (deletedLineCov != null) {
                             ret.deletedLinesNotHit++;
+                            ret.totalStatementsPrev++;
                         }
                     }
-//				 throw new UnsupportedOperationException();
+                }
+
+                for (Integer line : linesOnlyInPrev) {
+                    Integer hit = prev.coverage.get(line);
+                    if (hit != null) {
+                        ret.totalStatementsPrev++;
+                        if (hit > 0) {
+                            ret.totalStatementsHitPrev++;
+                            ret.nStatementsHitInEither++;
+                        }
+                    }
+                }
+
+                return ret;
+
             }
+
+            // New or modified file that had no coverage
+
+            // New file has no coverage either
+            if (coverage == null) return ret;
+
+            for (int line = 1; line < coverage.size(); line++) {
+
+                Integer curHits = coverage.get(line);
+                if (curHits == null) continue;
+
+                ret.totalStatementsNow++;
+                if (curHits > 0) {
+
+                    // Was not hit before, but is hit now
+                    ret.nStatementsHitInEither++;
+
+                    if (newLines.contains(line)) {
+                        // And new
+                        ret.newLinesHit++;
+                        continue;
+                    }
+
+                    ret.totalStatementsHitNow++;
+                }
+            }
+
+            // Modified file (with no previous coverage)
+            if (prev != null) {
+                // TODO: Why start at index 1?
+                for (int line = 1; line < coverage.size(); line++) {
+                    Integer curHits = coverage.get(line);
+                    if (curHits == null) continue;
+                    if (curHits > 0) ret.oldLinesNewlyHit++;
+                    if (curHits == 0) ret.oldLinesNoLongerHit++;
+                }
+            }
+
+            // New file (with no previous coverage)
+            if (prev == null) {
+                for (int line = 1; line < coverage.size(); line++) {
+                    Integer curHits = coverage.get(line);
+                    if (curHits == null) continue;
+                    if (curHits > 0) ret.newFileLinesHit++;
+                    if (curHits == 0) ret.newFileLinesNotHit++;
+                }
+            }
+
             return ret;
         }
 
