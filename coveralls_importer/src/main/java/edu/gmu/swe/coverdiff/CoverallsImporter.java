@@ -11,6 +11,7 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
+import org.json.*;
 
 import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.diff.DiffEntry;
@@ -184,6 +185,19 @@ public class CoverallsImporter implements Callable<Void> {
         // }
     }
 
+    public boolean isJSONValid(String test) {
+        try {
+            new JSONObject(test);
+        } catch (JSONException ex) {
+            try {
+                new JSONArray(test);
+            } catch (JSONException ex1) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     CompletableFuture<String> fetch(String url) {
         return CompletableFuture.supplyAsync(() -> {
             boolean cacheable = url.startsWith("https://coveralls.io/builds/");
@@ -208,6 +222,11 @@ public class CoverallsImporter implements Callable<Void> {
                 HttpRequest request = requestFactory.buildGetRequest(new GenericUrl(url));
                 String rawResponse = request.execute().parseAsString();
                 if (cacheable) {
+                    boolean isJSON = isJSONValid(rawResponse);
+                    if (!isJSON) {
+                        System.out.println("URL " + url + " does not return valid JSON.");
+                        rawResponse = "invalid JSON";
+                    }
                     System.out.println("Caching response of: " + url);
                     cache.save(url, rawResponse);
                 }
@@ -459,8 +478,16 @@ public class CoverallsImporter implements Callable<Void> {
             try {
                 SrcTestGeneralDiffResult sum = b.diffAgainst(ancestorBuild, repo, debugWriter);
 
+                // Writing to outFile.csv...
                 // Printing in the specified csv output format:
-                outputWriter.print(b.repo_name + "," + b.commit_sha + "," + ancestorBuild.commit_sha + "," + b.branch + "," + b.commitTime + "," + sum.toCSV());
+                outputWriter.print(
+                    b.repo_name + "," +
+                    b.commit_sha + "," +
+                    ancestorBuild.commit_sha + "," +
+                    b.branch + "," +
+                    b.commitTime + "," +
+                    sum.toCSV()
+                );
             } catch (Throwable t) {
                 t.printStackTrace();
             }
@@ -567,23 +594,18 @@ public class CoverallsImporter implements Callable<Void> {
         }
 
         public String summarize() {
-            int nBuilds = 0;
             int nSourceFiles = 0;
             for (Build b : builds) {
                 if (b.sourceFileList != null && b.sourceFileList.parsedFiles != null)
                     nSourceFiles += b.sourceFileList.parsedFiles.size();
-                nBuilds++;
             }
-            return nBuilds + " builds fetched, " + nSourceFiles + " total source files coverage files fetched";
+            return builds.size() + " builds fetched, " + nSourceFiles + " total source files coverage files fetched";
         }
 
     }
 
     static class Build implements Serializable {
 
-        /**
-         *
-         */
         private static final long serialVersionUID = -5689754868054900876L;
         public SourceFileList sourceFileList;
         String url;
@@ -623,8 +645,6 @@ public class CoverallsImporter implements Callable<Void> {
 
             try (RevWalk revWalk = new RevWalk(repo)) {
                 // OK, compare all of the files
-                // System.out.println(commit_sha);
-                // System.out.println(parentBuild.commit_sha);
                 HashMap<String, SourceFile> filesInFuture = new HashMap<>();
                 for (SourceFile sf : mostRecent.sourceFileList.parsedFiles)
                     filesInFuture.put(sf.name, sf);
@@ -808,7 +828,7 @@ public class CoverallsImporter implements Callable<Void> {
             HashSet<SourceFile> filesToIgnore = new HashSet<>();
             for (SourceFile sf : sourceFileList.parsedFiles) {
                 if (!validNames.contains(sf.name)) {
-                    System.out.println("Git repo does not contain file: " + sf.name);
+                    System.out.println("    Git repo does not contain file: " + sf.name);
                     filesToIgnore.add(sf);
                 }
             }
@@ -948,7 +968,6 @@ public class CoverallsImporter implements Callable<Void> {
             return;
         }
 
-        // Seems like the heart-piece if this file
         public SrcTestGeneralDiffResult diffAgainst(Build parentBuild, Repository repo, PrintWriter debugWriter) throws IOException {
             ObjectReader reader = repo.newObjectReader();
             CanonicalTreeParser thisCommParser = new CanonicalTreeParser();
@@ -1058,9 +1077,9 @@ public class CoverallsImporter implements Callable<Void> {
                         newTmp.delete();
                         oldTmp.delete();
                         HashMap<Integer, Integer> lineOffsets = new HashMap<>();
-                        System.out.println("offsetStrings from /bin/bash diff:");
+
+                        // Sample offsetStrings = ["589,587", "590,588", "591,589", ...]
                         for (String offset : offsetStrings) {
-                            System.out.println("    " + offset);
                             String[] offsetSplit = offset.split(",");
                             try {
                                 if (offsetSplit.length == 2)
@@ -1080,8 +1099,18 @@ public class CoverallsImporter implements Callable<Void> {
                     SourceFile prev = filesInParent.get(e.getKey());
                     DiffResult diff = e.getValue().diff(prev);
                     if (debugWriter != null)
-                        debugWriter.print(this.repo_name + ',' + this.commit_sha + ',' + parentBuild.commit_sha + ',' + this.branch + ',' + e.getKey() + ',' + diff.toCSV());
-                    summary.accumulate(diff, e.getKey());
+
+                        // Writing to coverage_class.csv...
+                        debugWriter.print(
+                            this.repo_name + ',' +
+                            this.commit_sha + ',' +
+                            parentBuild.commit_sha + ',' +
+                            this.branch + ',' +
+                            e.getKey() + ',' +
+                            diff.toCSV()
+                        );
+
+                    summary.accumulate(diff);
                 }
                 HashSet<String> filesInPrevNotCoveredInNew = new HashSet<>();
                 filesInPrevNotCoveredInNew.addAll(filesInParent.keySet());
@@ -1091,8 +1120,17 @@ public class CoverallsImporter implements Callable<Void> {
                     empty.coverage = new ArrayList<>();
                     DiffResult diff = empty.diff(filesInParent.get(sf));
                     if (debugWriter != null)
-                        debugWriter.print(this.repo_name + ',' + this.commit_sha + ',' + parentBuild.commit_sha + ',' + this.branch + ',' + sf + ',' + diff.toCSV());
-                    summary.accumulate(diff, sf);
+
+                        // Writing to coverage_class.csv...
+                        debugWriter.print(
+                            this.repo_name + ',' +
+                            this.commit_sha + ',' +
+                            parentBuild.commit_sha + ',' +
+                            this.branch + ',' +
+                            sf + ',' +
+                            diff.toCSV()
+                        );
+                    summary.accumulate(diff);
                 }
             }
             return summary;
@@ -1100,14 +1138,98 @@ public class CoverallsImporter implements Callable<Void> {
 
     }
 
-    static class SrcTestGeneralDiffResult extends DiffResult {
-        DiffResult nonTest = new DiffResult();
-        DiffResult test = new DiffResult();
-        DiffResult all = new DiffResult();
+    static class Printing {
 
-        int modFiles = 0;
-        int delFiles = 0;
-        int insFiles = 0;
+        public static List<Field> getPublicDeclaredIntFields(Class givenClass) {
+            List<Field> publicFields = new ArrayList<>();
+            Field[] fields = givenClass.getDeclaredFields();
+            for (Field field : fields) {
+                if (!int.class.equals(field.getType())) {
+                    continue;
+                }
+                int modifiers = field.getModifiers();
+                if(Modifier.isProtected(modifiers) || Modifier.isPrivate(modifiers)) {
+                    continue;
+                }
+                publicFields.add(field);
+            }
+            return publicFields;
+        }
+
+
+        public static List<String> getFieldNames(Class givenClass) {
+            List<Field> fields = Printing.getPublicDeclaredIntFields(givenClass);
+            List<String> result = new ArrayList<>();
+            for (Field field : fields) {
+                int modifiers = field.getModifiers();
+                if(Modifier.isProtected(modifiers) || Modifier.isPrivate(modifiers)) {
+                    continue;
+                }
+                result.add(field.getName());
+            }
+            return result;
+        }
+
+        public static List<String> mergeCSVHeaders(List<String> csvHeaders1, List<String> csvHeaders2) {
+            List<String> newList = Stream.of(csvHeaders1, csvHeaders2)
+                    .flatMap(Collection::stream)
+                    .collect(Collectors.toList());
+            return newList;
+        }
+
+        public static List<String> getCSVHeaders(Class givenClass, List<String> standardCSVHeaders) {
+            // Merge field names and standardCSVHeaders
+            List<String> stringFields = Printing.getFieldNames(givenClass);
+            return Printing.mergeCSVHeaders(standardCSVHeaders, stringFields);
+        }
+
+        public static String csvfyList(List<String> someList) {
+            StringBuilder sb = new StringBuilder();
+            String prefix = "";
+            for (String headerEl : someList ) {
+                sb.append(prefix);
+                sb.append(headerEl);
+                prefix = ",";
+            }
+            sb.append("\n");
+            return sb.toString();
+        }
+
+        public static String stringifyCSVHeader(Class givenClass, List<String> standardCSVHeaders) {
+            List<String> csvHeaders = Printing.getCSVHeaders(givenClass, standardCSVHeaders);
+            return csvfyList(csvHeaders);
+        }
+
+        public static String toCSV(Object givenObject) {
+            StringBuilder sb = new StringBuilder();
+            Printing.toCSV(sb, givenObject);
+            sb.append('\n');
+            return sb.toString();
+        }
+
+        // Write all object field values to CSV
+        public static void toCSV(StringBuilder sb, Object givenObject) {
+            List<Field> fields = getPublicDeclaredIntFields(givenObject.getClass());
+            String prefix = "";
+            for (Field field : fields) {
+                sb.append(prefix);
+                prefix = ",";
+                field.setAccessible(true);
+                try {
+                    int thisVal = (Integer) field.get(givenObject);
+                    sb.append(thisVal);
+                } catch (java.lang.IllegalAccessException ex) {
+                    ex.printStackTrace();
+                }
+            }
+        }
+    }
+
+    static class SrcTestGeneralDiffResult extends DiffResult {
+
+        private static List<String> standardCSVHeaders = Arrays.asList("repo", "childSha", "parentSha", "childBranch", "timestamp");
+
+        DiffResult all = new DiffResult();
 
         int modFilesSrc = 0;
         int delFilesSrc = 0;
@@ -1127,80 +1249,36 @@ public class CoverallsImporter implements Callable<Void> {
         int insLinesAllFiles = 0;
         int delLinesAllFiles = 0;
 
-
-        static void appendHeader(StringBuilder sb, String prefix) {
-            sb.append(',');
-            String[] headerElements = {
-                    "newHitLines,", "newNonHitLines,", "newFileHitLines,", "newFileNonHitLines,",
-                    "deletedLinesTested,", "deletedLinesNotTested,", "deletedFileLinesTested,",
-                    "deletedFileLinesNotTested,", "oldLinesNewlyTested,", "oldLinesNoLongerTested,",
-                    "modifiedLinesNewlyHit,", "modifiedLinesStillHit,", "modifiedLinesNotHit,",
-                    "nStatementsInBoth,", "nStatementsInEither,", "totalStatementsHitNow,",
-                    "totalStatementsHitPrev,", "totalStatementsNow,", "totalStatementsPrev,"
-            };
-            for ( String headerEl : headerElements ) {
-                if (prefix != null)
-                    sb.append(prefix);
-                sb.append(headerEl);
-            }
+        public static List<String> getCSVHeaders() {
+            List<String> diffResFieldNames = Printing.getFieldNames(DiffResult.class);
+            List<String> firstMerge = Printing.mergeCSVHeaders(standardCSVHeaders, diffResFieldNames);
+            List<String> secondMerge = Printing.mergeCSVHeaders(firstMerge, Printing.getFieldNames(SrcTestGeneralDiffResult.class));
+            return secondMerge;
         }
 
         public static String toCSVHeader() {
-            StringBuilder sb = new StringBuilder();
-            sb.append("repo");
-            sb.append(",childSha");
-            sb.append(",parentSha");
-            sb.append(",childBranch");
-            sb.append(",timestamp");
-            appendHeader(sb, null);
-            sb.append(",insFilesSrc,insFilesTest,modFilesSrc,modFilesTest,delFilesSrc,delFilesTest,newLinesSrc,newLinesTest,delLinesSrc,delLinesTest,insLinesAllFiles,delLinesAllFiles");
-            sb.append('\n');
-            return sb.toString();
+            List<String> csvHeaders = getCSVHeaders();
+            return Printing.csvfyList(csvHeaders);
         }
 
         public static String toCSVDebugHeader() {
-            StringBuilder sb = new StringBuilder();
-            sb.append("repo");
-            sb.append(",childSha");
-            sb.append(",parentSha");
-            sb.append(",childBranch,file");
-            appendHeader(sb, null);
-            return sb.toString();
+            List<String> extraCSVHeaders = Arrays.asList("repo", "childSha", "parentSha", "childBranch", "file");
+            List<String> diffResFieldNames = DiffResult.getCSVHeaders();
+            List<String> merge = Printing.mergeCSVHeaders(extraCSVHeaders, diffResFieldNames);
+            return Printing.csvfyList(merge);
         }
 
-        public void accumulate(DiffResult o, String fileName) {
+        public void accumulate(DiffResult o) {
             all.accumulate(o);
         }
 
+        // This is being written to outFile.csv
         @Override
         public String toCSV() {
             StringBuilder sb = new StringBuilder();
-            all.toCSV(sb);
+            Printing.toCSV(sb, all);
             sb.append(',');
-            sb.append(insFilesSrc);
-            sb.append(',');
-            sb.append(insFilesTest);
-            sb.append(',');
-            sb.append(modFilesSrc);
-            sb.append(',');
-            sb.append(modFilesTest);
-            sb.append(',');
-            sb.append(delFilesSrc);
-            sb.append(',');
-            sb.append(delFilesTest);
-            sb.append(',');
-            sb.append(insLinesSrc);
-            sb.append(',');
-            sb.append(insLinesTest);
-            sb.append(',');
-            sb.append(delLinesSrc);
-            sb.append(',');
-            sb.append(delLinesTest);
-            sb.append(',');
-            sb.append(insLinesAllFiles);
-            sb.append(',');
-            sb.append(delLinesAllFiles);
-            sb.append(',');
+            Printing.toCSV(sb, this);
             sb.append('\n');
             return sb.toString();
         }
@@ -1214,7 +1292,7 @@ public class CoverallsImporter implements Callable<Void> {
     static class DiffResult implements Serializable {
 
         private static final long serialVersionUID = -766592368068201095L;
-        private static List<String> standardCSVHeaders = Arrays.asList("repo", ",childSha", ",parentSha", ",childBranch", ",file");
+        private static List<String> standardCSVHeaders = Arrays.asList("repo", "childSha", "parentSha", "childBranch", "file");
         int modifiedLinesNewlyHit;
         int modifiedLinesNoLongerHit;  // modifiedLinesNotHit TODO: Find out what this does exactly
         int modifiedLinesStillHit;
@@ -1235,70 +1313,24 @@ public class CoverallsImporter implements Callable<Void> {
         int totalStatementsHitPrev;
         int totalStatementsPrev;
 
-        public static List<Field> getPublicDeclaredFields() {
-            List<Field> publicFields = new ArrayList<>();
-            Field[] fields = DiffResult.class.getDeclaredFields();
-            for (Field field : fields) {
-                int modifiers = field.getModifiers();
-                if(Modifier.isProtected(modifiers) || Modifier.isPrivate(modifiers)) {
-                    continue;
-                }
-                publicFields.add(field);
-            }
-            return publicFields;
-        }
-
-        public static List<String> getFieldNames() {
-            List<Field> fields = DiffResult.getPublicDeclaredFields();
-            List<String> result = new ArrayList<>();
-            for (Field field : fields) {
-                int modifiers = field.getModifiers();
-                if(Modifier.isProtected(modifiers) || Modifier.isPrivate(modifiers)) {
-                    continue;
-                }
-                result.add(field.getName());
-            }
-            return result;
-        }
-
         public static List<String> getCSVHeaders() {
-            // Merge field names and standardCSVHeaders
-            List<String> stringFields = getFieldNames();
-            List<String> newList = Stream.of(standardCSVHeaders, stringFields)
-                    .flatMap(Collection::stream)
-                    .collect(Collectors.toList());
-            return newList;
+            return Printing.getCSVHeaders(DiffResult.class, standardCSVHeaders);
         }
 
-        public static String toCSVHeader() {
-            StringBuilder sb = new StringBuilder();
-            List<String> csvHeaders = getCSVHeaders();
-            for (String headerEl : csvHeaders ) {
-                sb.append(headerEl);
-            }
-            sb.append("\n");
-            return sb.toString();
-        }
-
+        // This being written to coverage_class.csv
         public static String toCSVDebugHeader() {
-            StringBuilder sb = new StringBuilder();
-            List<String> csvHeaders = getCSVHeaders();
-            for (String headerEl : csvHeaders ) {
-                sb.append(headerEl);
-            }
-            sb.append("\n");
-            return sb.toString();
+            return Printing.stringifyCSVHeader(DiffResult.class, standardCSVHeaders);
         }
 
-        public void accumulate(DiffResult o) {
-            if (o == null)
+        public void accumulate(DiffResult otherDiffRes) {
+            if (otherDiffRes == null)
                 return;
-            List<Field> fields = DiffResult.getPublicDeclaredFields();
+            List<Field> fields = Printing.getPublicDeclaredIntFields(DiffResult.class);
             for (Field field : fields) {
                 field.setAccessible(true);
                 try {
                     int thisVal = (Integer) field.get(this);
-                    int otherVal = (Integer) field.get(o);
+                    int otherVal = (Integer) field.get(otherDiffRes);
                     field.set(this, thisVal + otherVal);
                 } catch (java.lang.IllegalAccessException ex) {
                     ex.printStackTrace();
@@ -1306,34 +1338,16 @@ public class CoverallsImporter implements Callable<Void> {
             }
         }
 
+        // This being written to coverage_class.csv
         public String toCSV() {
-            StringBuilder sb = new StringBuilder();
-            toCSV(sb);
-            sb.append('\n');
-            return sb.toString();
-        }
-
-        public void toCSV(StringBuilder sb) {
-            List<Field> fields = DiffResult.getPublicDeclaredFields();
-            String prefix = "";
-            for (Field field : fields) {
-                sb.append(prefix);
-                prefix = ",";
-                field.setAccessible(true);
-                try {
-                    int thisVal = (Integer) field.get(this);
-                    sb.append(thisVal);
-                } catch (java.lang.IllegalAccessException ex) {
-                    ex.printStackTrace();
-                }
-            }
+            return Printing.toCSV(this);
         }
 
         @Override
         public String toString() {
             String prefix = "";
             String result = "DiffResult [";
-            List<Field> fields = DiffResult.getPublicDeclaredFields();
+            List<Field> fields = Printing.getPublicDeclaredIntFields(DiffResult.class);
             for (Field field : fields) {
                 field.setAccessible(true);
                 try {
