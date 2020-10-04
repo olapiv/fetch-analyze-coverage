@@ -1227,6 +1227,7 @@ public class CoverallsImporter implements Callable<Void> {
 
     static class SrcTestGeneralDiffResult extends DiffResult {
 
+        // For outFile.csv
         private static List<String> standardCSVHeaders = Arrays.asList("repo", "childSha", "parentSha", "childBranch", "timestamp");
 
         DiffResult all = new DiffResult();
@@ -1256,11 +1257,13 @@ public class CoverallsImporter implements Callable<Void> {
             return secondMerge;
         }
 
+        // This is being written to outFile.csv
         public static String toCSVHeader() {
             List<String> csvHeaders = getCSVHeaders();
             return Printing.csvfyList(csvHeaders);
         }
 
+        // For flapping_jacoco_debug.csv & coverage_jacoco_debug.csv
         public static String toCSVDebugHeader() {
             List<String> extraCSVHeaders = Arrays.asList("repo", "childSha", "parentSha", "childBranch", "file");
             List<String> diffResFieldNames = DiffResult.getCSVHeaders();
@@ -1292,22 +1295,25 @@ public class CoverallsImporter implements Callable<Void> {
     static class DiffResult implements Serializable {
 
         private static final long serialVersionUID = -766592368068201095L;
+
+        // For coverage_class.csv
         private static List<String> standardCSVHeaders = Arrays.asList("repo", "childSha", "parentSha", "childBranch", "file");
+
         int modifiedLinesNewlyHit;
-        int modifiedLinesNoLongerHit;  // modifiedLinesNotHit TODO: Find out what this does exactly
+        int modifiedLinesNoLongerHit;  // TODO: Find out what this does exactly
         int modifiedLinesStillHit;
-        int newLinesHit;  // newHitLines
-        int newLinesNotHit;  // newNonHitLines
-        int newFileLinesHit;  // newFileHitLines
-        int newFileLinesNotHit;  // newFileNonHitLines
-        int deletedLinesHit;  // deletedLinesTested
-        int deletedLinesNotHit;  // deletedLinesNotTested
-        int deletedFileLinesHit;  // deletedFileLinesTested
-        int deletedFileLinesNotHit;  // deletedFileLinesNotTested
-        int oldLinesNewlyHit;  // oldLinesNewlyTested
-        int oldLinesNoLongerHit;  // oldLinesNoLongerTested
-        int nStatementsHitInBoth;  // nStatementsInBoth
-        int nStatementsHitInEither;  // nStatementsInEither
+        int newLinesHit;
+        int newLinesNotHit;
+        int newFileLinesHit;
+        int newFileLinesNotHit;
+        int deletedLinesHit;
+        int deletedLinesNotHit;
+        int deletedFileLinesHit;
+        int deletedFileLinesNotHit;
+        int oldLinesNewlyHit;
+        int oldLinesNoLongerHit;
+        int nStatementsHitInBoth;
+        int nStatementsHitInEither;
         int totalStatementsHitNow;
         int totalStatementsNow;
         int totalStatementsHitPrev;
