@@ -2,12 +2,21 @@ import json
 import csv
 import pandas
 
+outputPath = '/Users/vincent/Desktop/fetch-analyze-coverage/coveralls_importer/temp/outFile.csv'
 
 def print_csv():
-    colString = "repo,childSha,parentSha,childBranch,timestamp,modifiedLinesNewlyHit,modifiedLinesNoLongerHit,modifiedLinesStillHit,newLinesHit,newLinesNotHit,newFileLinesHit,newFileLinesNotHit,deletedLinesHit,deletedLinesNotHit,deletedFileLinesHit,deletedFileLinesNotHit,oldLinesNewlyHit,oldLinesNoLongerHit,nStatementsHitInBoth,nStatementsHitInEither,totalStatementsHitNow,totalStatementsNow,totalStatementsHitPrev,totalStatementsPrev,modFilesSrc,delFilesSrc,insFilesSrc,modFilesTest,delFilesTest,insFilesTest,insLinesSrc,delLinesSrc,insLinesTest,delLinesTest,insLinesAllFiles,delLinesAllFiles"
-    colnames = colString.split(",")
-    data = pandas.read_csv('/Users/vincent/Desktop/fetch-analyze-coverage/coveralls_importer/temp/outFile.csv', names=colnames)
-    data = data[['repo', 'oldLinesNewlyHit', 'oldLinesNoLongerHit', 'modifiedLinesNewlyHit', 'modifiedLinesNoLongerHit']]
+
+    with open(outputPath, 'r') as infile:
+        reader = csv.DictReader(infile)
+        colnames = reader.fieldnames
+
+    # Previously, for original code:
+    # importantColNames = ['repo', 'oldLinesNewlyTested', 'oldLinesNoLongerTested', 'modifiedLinesStillHit', 'modifiedLinesNotHit']
+
+    importantColNames = ['repo', 'oldLinesNewlyHit', 'oldLinesNoLongerHit']
+
+    data = pandas.read_csv(outputPath, names=colnames)
+    data = data[importantColNames]
 
     pandas.set_option('display.max_rows', data.shape[0]+1)
     print(data)
