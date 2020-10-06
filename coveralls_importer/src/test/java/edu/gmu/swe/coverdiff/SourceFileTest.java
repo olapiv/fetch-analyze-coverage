@@ -94,17 +94,17 @@ public class SourceFileTest {
         prev.coverage = Arrays.asList();
 
         CoverallsImporter.DiffResult diff = curr.diff(prev);
-        assertEquals(0,diff.modifiedLinesNewlyHit);
-        assertEquals(0,diff.modifiedLinesNoLongerHit);
-        assertEquals(0,diff.modifiedLinesStillHit);
+        // assertEquals(0,diff.modifiedLinesNewlyHit);
+        // assertEquals(0,diff.modifiedLinesNoLongerHit);
+        // assertEquals(0,diff.modifiedLinesStillHit);
         assertEquals(0,diff.newLinesHit);
         assertEquals(0,diff.newLinesNotHit);
         assertEquals(0,diff.deletedLinesHit);
         assertEquals(0,diff.deletedLinesNotHit);
         assertEquals(0,diff.oldLinesNewlyHit);
         assertEquals(0,diff.oldLinesNoLongerHit);
-        assertEquals(0,diff.nStatementsHitInBoth);
-        assertEquals(0,diff.nStatementsHitInEither);
+        assertEquals(0,diff.totalStatementsHitInBoth);
+        assertEquals(0,diff.totalStatementsHitInEither);
         assertEquals(0,diff.totalStatementsHitNow);
         assertEquals(0,diff.totalStatementsNow);
         assertEquals(0,diff.totalStatementsHitPrev);
@@ -117,17 +117,17 @@ public class SourceFileTest {
         prev.coverage = Arrays.asList();
 
         CoverallsImporter.DiffResult diff = curr.diff(prev);
-        assertEquals(0,diff.modifiedLinesNewlyHit);
-        assertEquals(0,diff.modifiedLinesNoLongerHit);
-        assertEquals(0,diff.modifiedLinesStillHit);
+        // assertEquals(0,diff.modifiedLinesNewlyHit);
+        // assertEquals(0,diff.modifiedLinesNoLongerHit);
+        // assertEquals(0,diff.modifiedLinesStillHit);
         assertEquals(0,diff.newLinesHit);
         assertEquals(0,diff.newLinesNotHit);
         assertEquals(0,diff.deletedLinesHit);
         assertEquals(0,diff.deletedLinesNotHit);
         assertEquals(1,diff.oldLinesNewlyHit);
         assertEquals(0,diff.oldLinesNoLongerHit);
-        assertEquals(0,diff.nStatementsHitInBoth);
-        assertEquals(1,diff.nStatementsHitInEither);
+        assertEquals(0,diff.totalStatementsHitInBoth);
+        assertEquals(1,diff.totalStatementsHitInEither);
         assertEquals(1,diff.totalStatementsHitNow);
         assertEquals(1,diff.totalStatementsNow);
         assertEquals(0,diff.totalStatementsHitPrev);
@@ -170,17 +170,17 @@ public class SourceFileTest {
 
 
         CoverallsImporter.DiffResult diff = curr.diff(prev);
-        assertEquals(0,diff.modifiedLinesNewlyHit);
-        assertEquals(0,diff.modifiedLinesNoLongerHit);
-        assertEquals(0,diff.modifiedLinesStillHit);
+        // assertEquals(0,diff.modifiedLinesNewlyHit);
+        // assertEquals(0,diff.modifiedLinesNoLongerHit);
+        // assertEquals(0,diff.modifiedLinesStillHit);
         assertEquals(0,diff.newLinesHit);
         assertEquals(0,diff.newLinesNotHit);
         assertEquals(0,diff.deletedLinesHit);
         assertEquals(0,diff.deletedLinesNotHit);
         assertEquals(0,diff.oldLinesNewlyHit);
         assertEquals(0,diff.oldLinesNoLongerHit);
-        assertEquals(1,diff.nStatementsHitInBoth);
-        assertEquals(1,diff.nStatementsHitInEither);
+        assertEquals(1,diff.totalStatementsHitInBoth);
+        assertEquals(1,diff.totalStatementsHitInEither);
         assertEquals(1,diff.totalStatementsHitNow);
         assertEquals(1,diff.totalStatementsNow);
         assertEquals(1,diff.totalStatementsHitPrev);
@@ -203,17 +203,17 @@ public class SourceFileTest {
         curr.lineMapping.put(2,2);
 
         CoverallsImporter.DiffResult diff = curr.diff(prev);
-        assertEquals(0,diff.modifiedLinesNewlyHit);
-        assertEquals(0,diff.modifiedLinesNoLongerHit);
-        assertEquals(0,diff.modifiedLinesStillHit);
+        // assertEquals(0,diff.modifiedLinesNewlyHit);
+        // assertEquals(0,diff.modifiedLinesNoLongerHit);
+        // assertEquals(0,diff.modifiedLinesStillHit);
         assertEquals(0,diff.newLinesHit);
         assertEquals(0,diff.newLinesNotHit);
         assertEquals(0,diff.deletedLinesHit);
         assertEquals(0,diff.deletedLinesNotHit);
         assertEquals(1,diff.oldLinesNewlyHit);
         assertEquals(1,diff.oldLinesNoLongerHit);
-        assertEquals(0,diff.nStatementsHitInBoth);
-        assertEquals(2,diff.nStatementsHitInEither);
+        assertEquals(0,diff.totalStatementsHitInBoth);
+        assertEquals(2,diff.totalStatementsHitInEither);
         assertEquals(1,diff.totalStatementsHitNow);
         assertEquals(2,diff.totalStatementsNow);
         assertEquals(1,diff.totalStatementsHitPrev);
@@ -234,17 +234,17 @@ public class SourceFileTest {
 
 
         CoverallsImporter.DiffResult diff = curr.diff(prev);
-        assertEquals(0,diff.modifiedLinesNewlyHit);
-        assertEquals(0,diff.modifiedLinesNoLongerHit);
-        assertEquals(0,diff.modifiedLinesStillHit);
+        // assertEquals(0,diff.modifiedLinesNewlyHit);
+        // assertEquals(0,diff.modifiedLinesNoLongerHit);
+        // assertEquals(0,diff.modifiedLinesStillHit);
         assertEquals(0,diff.newLinesHit);
         assertEquals(0,diff.newLinesNotHit);
         assertEquals(0,diff.deletedLinesHit);
         assertEquals(0,diff.deletedLinesNotHit);
         assertEquals(1,diff.oldLinesNewlyHit);
         assertEquals(0,diff.oldLinesNoLongerHit);
-        assertEquals(0,diff.nStatementsHitInBoth);
-        assertEquals(1,diff.nStatementsHitInEither);
+        assertEquals(0,diff.totalStatementsHitInBoth);
+        assertEquals(1,diff.totalStatementsHitInEither);
         assertEquals(1,diff.totalStatementsHitNow);
         assertEquals(1,diff.totalStatementsNow);
         assertEquals(0,diff.totalStatementsHitPrev);
@@ -264,17 +264,17 @@ public class SourceFileTest {
         curr.lineMapping.put(1,1);
 
         CoverallsImporter.DiffResult diff = curr.diff(prev);
-        assertEquals(0,diff.modifiedLinesNewlyHit);
-        assertEquals(0,diff.modifiedLinesNoLongerHit);
-        assertEquals(0,diff.modifiedLinesStillHit);
+        // assertEquals(0,diff.modifiedLinesNewlyHit);
+        // assertEquals(0,diff.modifiedLinesNoLongerHit);
+        // assertEquals(0,diff.modifiedLinesStillHit);
         assertEquals(0,diff.newLinesHit);
         assertEquals(0,diff.newLinesNotHit);
         assertEquals(0,diff.deletedLinesHit);
         assertEquals(0,diff.deletedLinesNotHit);
         assertEquals(0,diff.oldLinesNewlyHit);
         assertEquals(1,diff.oldLinesNoLongerHit);
-        assertEquals(0,diff.nStatementsHitInBoth);
-        assertEquals(1,diff.nStatementsHitInEither);
+        assertEquals(0,diff.totalStatementsHitInBoth);
+        assertEquals(1,diff.totalStatementsHitInEither);
         assertEquals(0,diff.totalStatementsHitNow);
         assertEquals(1,diff.totalStatementsNow);
         assertEquals(1,diff.totalStatementsHitPrev);
@@ -486,7 +486,7 @@ public class SourceFileTest {
         assertEquals(1,diff.deletedLinesHit);
         assertEquals(2,diff.deletedLinesNotHit);
 
-        assertEquals(3,diff.nStatementsHitInEither);
+        assertEquals(3,diff.totalStatementsHitInEither);
         assertEquals(2,diff.totalStatementsHitPrev);
     }
 
@@ -669,7 +669,7 @@ public class SourceFileTest {
         curr.lineMapping.put(5,6);
 
         CoverallsImporter.DiffResult diff = curr.diff(prev);
-        assertEquals(1,diff.nStatementsHitInBoth);
+        assertEquals(1,diff.totalStatementsHitInBoth);
     }
 
     @Test
@@ -699,7 +699,7 @@ public class SourceFileTest {
         curr.lineMapping.put(5,6);
 
         CoverallsImporter.DiffResult diff = curr.diff(prev);
-        assertEquals(1,diff.nStatementsHitInBoth);
+        assertEquals(1,diff.totalStatementsHitInBoth);
     }
 
     @Test
@@ -729,7 +729,7 @@ public class SourceFileTest {
         curr.lineMapping.put(5,6);
 
         CoverallsImporter.DiffResult diff = curr.diff(prev);
-        assertEquals(5,diff.nStatementsHitInEither);
+        assertEquals(5,diff.totalStatementsHitInEither);
     }
 
     @Test
@@ -743,17 +743,17 @@ public class SourceFileTest {
         curr.coverage.add(5,1);
 
         CoverallsImporter.DiffResult diff = curr.diff(null);
-        assertEquals(0,diff.modifiedLinesNewlyHit);
-        assertEquals(0,diff.modifiedLinesNoLongerHit);
-        assertEquals(0,diff.modifiedLinesStillHit);
+        // assertEquals(0,diff.modifiedLinesNewlyHit);
+        // assertEquals(0,diff.modifiedLinesNoLongerHit);
+        // assertEquals(0,diff.modifiedLinesStillHit);
         assertEquals(0,diff.newLinesHit);
         assertEquals(0,diff.newLinesNotHit);
         assertEquals(0,diff.deletedLinesHit);
         assertEquals(0,diff.deletedLinesNotHit);
         assertEquals(0,diff.oldLinesNewlyHit);
         assertEquals(0,diff.oldLinesNoLongerHit);
-        assertEquals(0,diff.nStatementsHitInBoth);
-        assertEquals(3,diff.nStatementsHitInEither);
+        assertEquals(0,diff.totalStatementsHitInBoth);
+        assertEquals(3,diff.totalStatementsHitInEither);
         assertEquals(3,diff.totalStatementsHitNow);
         assertEquals(5,diff.totalStatementsNow);
         assertEquals(0,diff.totalStatementsHitPrev);
