@@ -7,8 +7,6 @@ import java.lang.reflect.*;
 import java.util.Map.Entry;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.logging.Level;
-import java.util.logging.Logger;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import org.json.*;
@@ -242,6 +240,8 @@ public class CoverallsImporter implements Callable<Void> {
         if (exception)
             throw new IOException();
         outstandingRequests.incrementAndGet();
+
+        // Example: https://coveralls.io/builds/2885284/source_files.json
         String urlToFetch = "https://coveralls.io/builds/" + b.commit_sha + "/source_files.json";
         System.out.println("Fetching url: " + urlToFetch);
         CompletableFuture<String> rq = fetch(urlToFetch);
@@ -252,16 +252,21 @@ public class CoverallsImporter implements Callable<Void> {
                 } else if (ex != null) {
                     ex.printStackTrace();
                 } else {
+
+                    // De-serializing Coveralls data into objects (SourceFileList & SourceFile)
                     SourceFileList sfl = sourceFileListJsonAdapter.fromJson(ret);
                     sfl.parsedFiles = sourceFileJsonAdapter.fromJson(sfl.source_files);
+
+                    // Has been parsed now - unnecessary data
                     sfl.source_files = null;
+                    
                     b.appendSFL(sfl);
                     if (sfl.current_page == 1 && sfl.total_pages > 1) {
                         for (int i = 2; i < sfl.total_pages; i++)
                             fetchSourceFileInfo(b, i);
                     }
 
-                    // Now fetch data on each file
+                    // Now fetch coverage data on single file
                     for (SourceFile sf : sfl.parsedFiles) {
                         getCoverageArray(b.commit_sha, sf);
                     }
@@ -389,14 +394,16 @@ public class CoverallsImporter implements Callable<Void> {
         return shasToFetch;
     }
 
-    BuildList processBuilds(String projectURL) throws Exception {
-        System.out.println("Fetching and processing builds from: " + projectURL);
+    BuildList processRepository(String projectURL) throws Exception {
+        System.out.println("STARTING TO PROCESS REPO: " + projectURL);
         exception = false;
 
         // Calculating coveralls path of Github repo
         String githubPath = projectURL.replace("https://github.com/", "");
         String projectSlug = githubPath.replace("/", "-");
         String coverallsPath = "/github/" + githubPath;
+
+        System.out.println("Coveralls Path: " + coverallsPath);
 
         shasToFetch = getShasToFetch(projectSlug);
 
@@ -405,7 +412,7 @@ public class CoverallsImporter implements Callable<Void> {
         if (!cachedParsed.exists() || skipSerialized) {
             if (offline) return null;
 
-            System.out.println("Fetching builds from coveralls.io");
+            System.out.println("No builds available locally. Fetching builds from coveralls.io");
             bl = fetchBuilds(coverallsPath, 1);
             while (shouldKeepFetching(bl)) {
                 BuildList _bl = fetchBuilds(coverallsPath, bl.page + 1);
@@ -430,7 +437,7 @@ public class CoverallsImporter implements Callable<Void> {
             ObjectInputStream ois = new ObjectInputStream(new FileInputStream(cachedParsed));
             bl = (BuildList) ois.readObject();
             ois.close();
-
+            System.out.println("Builds from cache: " + bl.builds.size());
         }
 
         if (skipCoverage) return bl;
@@ -452,13 +459,18 @@ public class CoverallsImporter implements Callable<Void> {
 
         File repoDir = new File(repoBaseDirectory, projectSlug);
         if (!repoDir.exists()) {
+            System.out.println("Cloning Git directory...");
             Git.cloneRepository().setURI(projectURL).setBare(true).setDirectory(repoDir).call();
+        } else {
+            System.out.println("Git directory already available locally.");
         }
 
         FileRepositoryBuilder frb = new FileRepositoryBuilder();
         frb.setGitDir(repoDir);
         frb.setBare();
         Repository repo = frb.build();
+
+        System.out.println("Starting to iterate over builds...");
         int parentsFound = 0;
         int parentNotFound = 0;
         for (Build b : bl.builds) {
@@ -473,11 +485,12 @@ public class CoverallsImporter implements Callable<Void> {
                 System.out.println("Can't find ancestor build for commit sha:" + b.commit_sha + " in repo: "  + b.repo_name );
                 continue;
             }
-
             parentsFound++;
-            try {
-                SrcTestGeneralDiffResult sum = b.diffAgainst(ancestorBuild, repo, debugWriter);
 
+            try {
+                System.out.println("Starting calculation of SrcTestGeneralDiffResult...");
+                SrcTestGeneralDiffResult sum = b.diffAgainst(ancestorBuild, repo, debugWriter);
+                System.out.println("Calculated SrcTestGeneralDiffResult successfully. Writing to output.");
                 // Writing to outFile.csv...
                 // Printing in the specified csv output format:
                 outputWriter.print(
@@ -494,7 +507,11 @@ public class CoverallsImporter implements Callable<Void> {
 
         }
 
-        System.out.println("Parents found: " + parentsFound + "; Parents not found: " + parentNotFound + "; Total parents: " + bl.builds.size());
+        System.out.println(
+                "Parents found: " + parentsFound +
+                "; Parents not found: " + parentNotFound +
+                "; Total parents: " + bl.builds.size()
+        );
 
         if (debug) debugWriter.close();
         outputWriter.close();
@@ -545,7 +562,7 @@ public class CoverallsImporter implements Callable<Void> {
                     String line = scanner.nextLine();
                     String url = line.split(",")[0];
                     try {
-                        BuildList ret = processBuilds(url);
+                        BuildList ret = processRepository(url);
                         if (ret != null)
                             System.out.println(ret.summarize());
                     } catch (Throwable ex) {
@@ -560,7 +577,7 @@ public class CoverallsImporter implements Callable<Void> {
             }
             return null;
         } else if (singleProjectURL != null) {
-            BuildList ret = processBuilds(singleProjectURL);
+            BuildList ret = processRepository(singleProjectURL);
             if (ret != null)
                 System.out.println(ret.summarize());
             return null;
@@ -795,11 +812,11 @@ public class CoverallsImporter implements Callable<Void> {
         * Checking sourceFileList, making sure file names are correct and deleting them in case they are not existent
         * in the Git repository.
         * */
-        private void checkAndFixNames(HashSet<String> validNames) {
+        private void checkAndFixNames(HashSet<String> allFilesInGitCommit) {
 
             if (namesFixed) return;
 
-            System.out.println("Fixing file names in sourceFileList");
+            // Fixing file names in sourceFileList
             if (this.repo_name.equals("ilovepi/Compiler")) {
                 for (SourceFile sf : sourceFileList.parsedFiles) {
                     sf.name = "compiler" + sf.name;
@@ -815,19 +832,21 @@ public class CoverallsImporter implements Callable<Void> {
             } else if (this.repo_name.equals("ShiftForward/apso")) {
                 for (SourceFile sf : sourceFileList.parsedFiles) {
                     if (sf.name.startsWith("src/")) {
-                        if (validNames.contains("core/" + sf.name))
+                        if (allFilesInGitCommit.contains("core/" + sf.name))
                             sf.name = "core/" + sf.name;
-                        else if (validNames.contains("testkit/" + sf.name))
+                        else if (allFilesInGitCommit.contains("testkit/" + sf.name))
                             sf.name = "testkit/" + sf.name;
                     }
                 }
             }
             namesFixed = true;
 
-            System.out.println("Removing non-existent files from sourceFileList");
+            // Removing non-existent files from sourceFileList.
+            // It may be possible that coveralls returns coverage to sourceFiles that do not exist in the actual git
+            // repository. Not sure why this happens - maybe because files are sometimes created during the build process..
             HashSet<SourceFile> filesToIgnore = new HashSet<>();
             for (SourceFile sf : sourceFileList.parsedFiles) {
-                if (!validNames.contains(sf.name)) {
+                if (!allFilesInGitCommit.contains(sf.name)) {
                     System.out.println("    Git repo does not contain file: " + sf.name);
                     filesToIgnore.add(sf);
                 }
@@ -859,6 +878,10 @@ public class CoverallsImporter implements Callable<Void> {
             boolean entryIsTestOrSpec = (e.getNewPath().toLowerCase().contains("test") || e.getNewPath().contains(".spec"));
 
             // Write aggregated diff data to summary
+
+            // One DiffEntry per file --> ADD file / DELETE file / MODIFY file
+            // Multiple edits per DiffEntry --> INSERT line / DELETE line / REPLACE line
+
             switch (e.getChangeType()) {
                 case MODIFY:
 
@@ -881,6 +904,8 @@ public class CoverallsImporter implements Callable<Void> {
                                         summary.delLinesSrc++;
                                 break;
                             case REPLACE:
+                                // Important - this is a set of added and removed lines, not simply a single modified
+                                // line.
                                 for (int l = ed.getBeginA() + 1; l <= ed.getEndA(); l++)
                                     if (entryIsTestOrSpec)
                                         summary.delLinesTest++;
@@ -998,11 +1023,9 @@ public class CoverallsImporter implements Callable<Void> {
                 HashSet<String> modifiedFiles = new HashSet<>();
 
                 HashMap<String, SourceFile> filesInNew = new HashMap<>();
-                for (SourceFile sf : sourceFileList.parsedFiles)
-                    filesInNew.put(sf.name, sf);
+                for (SourceFile sf : sourceFileList.parsedFiles) filesInNew.put(sf.name, sf);
                 HashMap<String, SourceFile> filesInParent = new HashMap<>();
-                for (SourceFile sf : parentBuild.sourceFileList.parsedFiles)
-                    filesInParent.put(sf.name, sf);
+                for (SourceFile sf : parentBuild.sourceFileList.parsedFiles) filesInParent.put(sf.name, sf);
 
                 try (DiffFormatter f = new DiffFormatter(System.out)) {
                     f.setRepository(repo);
@@ -1022,10 +1045,8 @@ public class CoverallsImporter implements Callable<Void> {
 
                         // sourceFile is later changed by reference inside filesInNew
                         SourceFile sourceFile = filesInNew.get(e.getNewPath());
-                        if (sourceFile == null) {
-                            // Maybe because the file is never called
-                            continue;
-                        }
+                        if (sourceFile == null) continue;
+
                         for (Edit ed : el) {
                             switch (ed.getType()) {
                                 case INSERT:
@@ -1299,25 +1320,35 @@ public class CoverallsImporter implements Callable<Void> {
         // For coverage_class.csv
         private static List<String> standardCSVHeaders = Arrays.asList("repo", "childSha", "parentSha", "childBranch", "file");
 
-        int modifiedLinesNewlyHit;
-        int modifiedLinesNoLongerHit;  // TODO: Find out what this does exactly
-        int modifiedLinesStillHit;
+        // This is actually never used.
+        // Measuring which modified lines are no longer hit is difficult. This is because git defines "replaced lines"
+        // as a set of lines, not single lines. This means that 10 lines can be replaced by 2. If 7 of the original lines
+        // used to be hit, and now 1 out of 2 lines are being hit, what is modifiedLinesNoLongerHit?
+        // int modifiedLinesNewlyHit;
+        // int modifiedLinesNoLongerHit;
+        // int modifiedLinesStillHit;
+
         int newLinesHit;
         int newLinesNotHit;
         int newFileLinesHit;
         int newFileLinesNotHit;
+
         int deletedLinesHit;
         int deletedLinesNotHit;
         int deletedFileLinesHit;
         int deletedFileLinesNotHit;
+
         int oldLinesNewlyHit;
-        int oldLinesNoLongerHit;
-        int nStatementsHitInBoth;
-        int nStatementsHitInEither;
-        int totalStatementsHitNow;
+        int oldLinesNoLongerHit; // TODO: IMPORTANT METRIC --> Make sure this is actually being reached
+        int oldLinesStillHit;
+        int oldLinesStillNotHit;
+
         int totalStatementsNow;
-        int totalStatementsHitPrev;
         int totalStatementsPrev;
+        int totalStatementsHitNow;
+        int totalStatementsHitPrev;
+        int totalStatementsHitInBoth;
+        int totalStatementsHitInEither;
 
         public static List<String> getCSVHeaders() {
             return Printing.getCSVHeaders(DiffResult.class, standardCSVHeaders);
@@ -1369,21 +1400,26 @@ public class CoverallsImporter implements Callable<Void> {
         }
     }
 
+    // Modeled after coveralls API response
     static class SourceFileList implements Serializable {
         private static final long serialVersionUID = 174237175589062016L;
         int total;
         int total_pages;
         int current_page;
-        String source_files;
-        List<SourceFile> parsedFiles;
+        String source_files;            // Stringified JSON
+        List<SourceFile> parsedFiles;   // Parsed source_files
 
         @Override
         public String toString() {
-            return "SourceFileList [total=" + total + ", total_pages=" + total_pages + ", current_page=" + current_page + ", parsedFiles=" + parsedFiles + "]";
+            return "SourceFileList [total=" + total +
+                    ", total_pages=" + total_pages +
+                    ", current_page=" + current_page +
+                    ", parsedFiles=" + parsedFiles +
+                    "]";
         }
-
     }
 
+    // Modeled after coveralls API response
     static class SourceFile implements Serializable {
         private static final long serialVersionUID = 8951794222372644260L;
         String name;
@@ -1393,8 +1429,8 @@ public class CoverallsImporter implements Callable<Void> {
         double covered_percent;
         List<Integer> coverage;
         transient HashMap<Integer, Integer> lineMapping;
-        transient HashSet<Integer> newLines = new HashSet<>();
-        transient HashSet<Integer> deletedLines = new HashSet<>();
+        transient HashSet<Integer> newLines = new HashSet<>();  // New lines of modified file
+        transient HashSet<Integer> deletedLines = new HashSet<>();  // Deleted lines in previous file
 
 
         private void readObject(java.io.ObjectInputStream in) throws IOException, ClassNotFoundException {
@@ -1411,7 +1447,13 @@ public class CoverallsImporter implements Callable<Void> {
 
         @Override
         public String toString() {
-            return "SourceFile [name=" + name + ", relevant_line_count=" + relevant_line_count + ", covered_line_count=" + covered_line_count + ", missed_line_count=" + missed_line_count + ", covered_percent=" + covered_percent + ", coverage=" + coverage + "]";
+            return "SourceFile [name=" + name +
+                    ", relevant_line_count=" + relevant_line_count +
+                    ", covered_line_count=" + covered_line_count +
+                    ", missed_line_count=" + missed_line_count +
+                    ", covered_percent=" + covered_percent +
+                    ", coverage=" + coverage +
+                    "]";
         }
 
         public HashSet<String> getFlappingLines(SourceFile prev, HashMap<Integer, Integer> lineMapping, HashMap<Integer, Integer> futureMap) {
@@ -1460,7 +1502,7 @@ public class CoverallsImporter implements Callable<Void> {
                             ret.add(this.name + "," + lineInFuture + ",1");
                         }
                     }
-                } else if (prevHits != null && prevHits > 0) {
+                } else if (prevHits > 0) {
 
                     // Was hit before
                     if (curHits == 0) {
@@ -1488,7 +1530,7 @@ public class CoverallsImporter implements Callable<Void> {
             // Old or modified file that had coverage
             if (prev != null && prev.coverage != null) {
 
-                // Had coverage previously, but none available now. Calling this "deletedFileLines" (not "deletedLines")
+                // File was deleted
                 if (this.coverage == null || (this.name == null && this.coverage.size() == 0)) {
                     for (int line = 1; line < prev.coverage.size(); line++) {
                         Integer prevHits = prev.coverage.get(line);
@@ -1500,10 +1542,10 @@ public class CoverallsImporter implements Callable<Void> {
                 }
 
                 // File in both
-                HashSet<Integer> linesOnlyInPrev = new HashSet<>();
 
+                // After we successfully map a line from NOW to PREV we remove from this list
+                HashSet<Integer> linesOnlyInPrev = new HashSet<>();
                 for (int i = 1; i < prev.coverage.size(); i++)
-                    // After we successfully map a line from NOW to PREV we remove from this list
                     linesOnlyInPrev.add(i);
 
                 for (int line = 1; line < coverage.size(); line++) {
@@ -1511,106 +1553,69 @@ public class CoverallsImporter implements Callable<Void> {
                     Integer curHits = coverage.get(line);
                     Integer prevHits = null;
 
+                    // File unmodified
                     if (lineMapping == null) {
+
                         if (prev.coverage.size() > line) {
-                            prevHits = prev.coverage.get(line);
                             linesOnlyInPrev.remove(line);
+                            prevHits = prev.coverage.get(line);
                         }
-                    } else if (lineMapping.containsKey(line) && lineMapping.get(line) < prev.coverage.size()) {
 
-                        // Getting corresponding line in previous file:
-                        int mapping = lineMapping.get(line);
+                    // File modified, but this line was not added
+                    } else if (lineMapping.containsKey(line)) {
 
-                        linesOnlyInPrev.remove(mapping);
-                        prevHits = prev.coverage.get(mapping);
+                        if (lineMapping.get(line) < prev.coverage.size()) {
+                            // Getting corresponding line in previous file:
+                            int mapping = lineMapping.get(line);
+
+                            linesOnlyInPrev.remove(mapping);
+                            prevHits = prev.coverage.get(mapping);
+                        }
+
                     }
 
-                    if (curHits != null) {
+                    if (prevHits != null) ret.totalStatementsPrev++;
+                    if (curHits != null) ret.totalStatementsNow++;
+                    if (prevHits != null && prevHits >= 0) ret.totalStatementsHitPrev++;
+                    if (curHits != null && curHits >= 0) ret.totalStatementsHitNow++;
+                    if (curHits != null && curHits > 0 || prevHits != null && prevHits > 0) ret.totalStatementsHitInEither++;
+                    if (curHits != null && curHits > 0 && prevHits != null && prevHits > 0) ret.totalStatementsHitInBoth++;
+                    if (curHits != null && curHits > 0 && prevHits != null && prevHits > 0) ret.oldLinesStillHit++;
+                    if (curHits != null && curHits == 0 && prevHits == null) ret.newLinesNotHit++;
+                    if (curHits != null && curHits == 0 && prevHits != null && prevHits > 0) ret.oldLinesNoLongerHit++;
+                    if (curHits != null && curHits > 0 && newLines.contains(line)) ret.newLinesHit++;
+                    if (curHits != null && curHits > 0 && !newLines.contains(line) && (prevHits == null || prevHits == 0)) ret.oldLinesNewlyHit++;
 
-                        // Is a statement now.
-                        ret.totalStatementsNow++;
-
-                        if (prevHits != null) ret.totalStatementsPrev++;
-
-                        if ((prevHits == null || prevHits == 0)) {
-
-                            // Was not hit before
-                            if (curHits > 0) {
-                                // Line not hit before, hit now
-                                ret.nStatementsHitInEither++;
-                                ret.totalStatementsHitNow++;
-
-                                if (newLines.contains(line)) {
-                                    // And new
-                                    ret.newLinesHit++;
-                                } else {
-                                    ret.oldLinesNewlyHit++;
-                                }
-
-                            } else if (curHits < 1) {
-                                if (prevHits == null) {
-                                    ret.newLinesNotHit++;
-                                }
-                            }
-                            continue;
-                        }
-
-                        // Was hit before
-                        ret.nStatementsHitInEither++;
-                        ret.totalStatementsHitPrev++;
-
-                        if (curHits > 0) {
-                            // Was hit before AND now
-                            ret.nStatementsHitInBoth++;
-                            ret.totalStatementsHitNow++;
-                            continue;
-                        }
-
-                        // Was hit before but NOT now (0)
-                        ret.oldLinesNoLongerHit++;
-
-                    } else if (prevHits != null) {
-                        ret.totalStatementsPrev++;
-                        if (prevHits > 0) {
-                            ret.totalStatementsHitPrev++;
-                            ret.nStatementsHitInEither++;
-                        }
-                    }
                 }
 
                 // Now collect deleted lines
-                for (Integer i : deletedLines) {
+                for (Integer prevLineNumber : deletedLines) {
+                    linesOnlyInPrev.remove(prevLineNumber);
+                    if (prevLineNumber >= prev.coverage.size()) continue;
 
-                    int prevLineNumber = i;
-                    linesOnlyInPrev.remove(i);
-
-                    if (prev.coverage.size() <= prevLineNumber) {
-                        if (prev.coverage.size() == 0)
-                            System.out.println("PROBLEM " + prevLineNumber + " vs " + prev.coverage.size() + " in " + this.name);
-                    }
-
-                    if (prev.coverage.size() > prevLineNumber) {
-                        Integer deletedLineCov = prev.coverage.get(prevLineNumber);
-                        if (deletedLineCov != null && deletedLineCov > 0) {
+                    Integer deletedLineCov = prev.coverage.get(prevLineNumber);
+                    if (deletedLineCov != null) {
+                        if (deletedLineCov > 0) {
                             ret.deletedLinesHit++;
-                            ret.nStatementsHitInEither++;
+                            ret.totalStatementsHitInEither++;
                             ret.totalStatementsHitPrev++;
-                        } else if (deletedLineCov != null) {
+                        } else if (deletedLineCov == 0) {
                             ret.deletedLinesNotHit++;
                             ret.totalStatementsPrev++;
                         }
                     }
                 }
 
+                // TODO: Find out what this does exactly
                 for (Integer line : linesOnlyInPrev) {
                     Integer hit = prev.coverage.get(line);
-                    if (hit != null) {
-                        ret.totalStatementsPrev++;
-                        if (hit > 0) {
-                            ret.totalStatementsHitPrev++;
-                            ret.nStatementsHitInEither++;
-                        }
+                    if (hit == null) continue;
+                    ret.totalStatementsPrev++;
+                    if (hit > 0) {
+                        ret.totalStatementsHitPrev++;
+                        ret.totalStatementsHitInEither++;
                     }
+
                 }
 
                 return ret;
@@ -1631,7 +1636,7 @@ public class CoverallsImporter implements Callable<Void> {
                 if (curHits > 0) {
 
                     // Was not hit before, but is hit now
-                    ret.nStatementsHitInEither++;
+                    ret.totalStatementsHitInEither++;
 
                     if (newLines.contains(line)) {
                         // And new
@@ -1650,7 +1655,7 @@ public class CoverallsImporter implements Callable<Void> {
                     Integer curHits = coverage.get(line);
                     if (curHits == null) continue;
                     if (curHits > 0) ret.oldLinesNewlyHit++;
-                    if (curHits == 0) ret.oldLinesNoLongerHit++;
+                    if (curHits == 0) ret.oldLinesStillNotHit++;
                 }
             }
 
